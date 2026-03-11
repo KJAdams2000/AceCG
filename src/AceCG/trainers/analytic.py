@@ -23,8 +23,13 @@ Expected batch schemas
 ----------------------
 REMTrainerAnalytic.step(batch):
   batch = {
-    "AA": {"dist": ..., "weight": optional},
     "CG": {"dist": ..., "weight": optional},
+    "recompute_dUdL_AA": optional bool,   # default True
+    # If recompute_dUdL_AA=True:
+    "AA": {"dist": ..., "weight": optional},
+    # If recompute_dUdL_AA=False:
+    "dUdL_AA": np.ndarray,                # precomputed <dU/dλ>_AA
+    "d2U_AA": np.ndarray,                 # optional; required only when optimizer needs Hessian
     "step_index": optional int,
   }
 
@@ -35,11 +40,22 @@ MSETrainerAnalytic.step(batch):
     "CG": {"dist": ..., "weight": optional},
     "CG_bin_idx_frame": np.ndarray, shape (n_frames,),
     "weighted_gauge": optional bool,
+    "weighted_loss": optional bool,
+    "step_index": optional int,
+  }
+
+CDREMTrainerAnalytic.step(batch):
+  batch = {
+    "dUdL_z_by_x": np.ndarray, shape (n_x, n_params),
+    "dUdL_xz": np.ndarray, shape (n_params,),
+    "x_weight": optional np.ndarray, shape (n_x,),
     "step_index": optional int,
   }
 
 MultiTrainerAnalytic.step(batches):
   batches = [batch_for_trainer0, batch_for_trainer1, ...]  (same length as trainers)
+  Note: each sub-batch may include optional dUdL-parallel keys `parallel_dUdL`, `dUdL_n_parts`, `dUdL_n_workers` (forwarded to REM/MSE).
+  For REM sub-batches, `recompute_dUdL_AA=False` allows reuse of precomputed AA derivatives.
 
 """
 
@@ -86,19 +102,46 @@ class REMBatch(TypedDict, total=False):
 
     Required keys
     -------------
-    AA : EnsembleBatch
-        AA/reference ensemble. Must include AA["dist"].
     CG : EnsembleBatch
         CG/model ensemble. Must include CG["dist"].
+
+    AA-side inputs
+    --------------
+    Use exactly one of the following AA modes.
+
+    Mode 1: recompute from AA["dist"] (default)
+        recompute_dUdL_AA : bool = True
+        AA : EnsembleBatch
+            AA/reference ensemble. Must include AA["dist"].
+
+    Mode 2: reuse precomputed AA derivatives
+        recompute_dUdL_AA : bool = False
+        dUdL_AA : np.ndarray
+            Precomputed AA ensemble average <dU/dλ>_AA.
+        d2U_AA : np.ndarray, optional
+            Precomputed AA second-derivative matrix used in the REM Hessian.
+            Required only when the optimizer accepts a Hessian.
 
     Optional keys
     -------------
     step_index : int
         Logging step counter.
+    parallel_dUdL : bool
+        Whether parallel dUdL calculation is enabled for recomputed paths.
+    dUdL_n_parts : int
+        Split Pair2DistanceByFrame into this many chunks for dUdL_parallel.
+    dUdL_n_workers : int
+        Number of worker processes for dUdL_parallel.
     """
-    AA: EnsembleBatch
+    AA: NotRequired[EnsembleBatch]
     CG: EnsembleBatch
+    recompute_dUdL_AA: NotRequired[bool]
+    dUdL_AA: NotRequired[Any]
+    d2U_AA: NotRequired[Any]
     step_index: NotRequired[int]
+    parallel_dUdL: bool
+    dUdL_n_parts: int
+    dUdL_n_workers: Optional[int]
 
 
 class REMOut(TypedDict, total=False):
@@ -143,14 +186,29 @@ class MSEBatch(TypedDict, total=False):
     Optional keys
     -------------
     weighted_gauge : bool
+    weighted_loss : bool
+        If True, use the weighted PMF-mismatch objective
+            loss = Σ_s p_CG(s) [F_AA(s) - F_CG(s)]^2
+        and the corresponding weighted gradient. If False, use the unweighted
+        squared mismatch summed over bins.
     step_index : int
+    parallel_dUdL : bool
+        Whether parallel dUdL calculation
+    dUdL_n_parts : int
+        Splitting Pair2Distance into n_parts
+    dUdL_n_workers : int
+        N_workers for dUdL parallelization
     """
     pmf_AA: Any
     pmf_CG: Any
     CG: EnsembleBatch
     CG_bin_idx_frame: Any
     weighted_gauge: NotRequired[bool]
+    weighted_loss: NotRequired[bool]
     step_index: NotRequired[int]
+    parallel_dUdL: bool
+    dUdL_n_parts: int
+    dUdL_n_workers: Optional[int]
 
 
 class MSEOut(TypedDict, total=False):
@@ -177,6 +235,94 @@ class MSEOut(TypedDict, total=False):
     meta: Dict[str, Any]
 
 
+class CDREMBatch(TypedDict, total=False):
+    """
+    Batch schema for CDREMTrainerAnalytic.step.
+
+    Required first-order keys
+    -------------------------
+    dUdL_z_by_x : np.ndarray, shape (n_x, n_params)
+        Row i is the conditional first-derivative average for one x-subsample:
+            E_{z~q(z|x_i)} [ dU/dλ ]
+    dUdL_xz : np.ndarray, shape (n_params,)
+        Joint-model first-derivative average:
+            E_{(x,z)~q(x,z)} [ dU/dλ ]
+
+    Optional weighting keys
+    -----------------------
+    x_weight : np.ndarray, shape (n_x,)
+        Weight for each x-subsample. If omitted, uniform average over x is used.
+
+    Optional second-order keys
+    --------------------------
+    d2U_z_by_x : np.ndarray, shape (n_x, n_params, n_params)
+        Row i is the conditional second-derivative average for x_i:
+            E_{z~q(z|x_i)} [ d²U/dλ_i dλ_j ]
+    d2U_xz : np.ndarray, shape (n_params, n_params)
+        Joint-model second-derivative average:
+            E_{(x,z)~q(x,z)} [ d²U/dλ_i dλ_j ]
+    dUdLdUdL_xz : np.ndarray, shape (n_params, n_params)
+        Joint-model second moment of first derivatives:
+            E_{(x,z)~q(x,z)} [ (dU/dλ)(dU/dλ)^T ]
+    cov_z_by_x : np.ndarray, shape (n_x, n_params, n_params)
+        Conditional covariance of first derivatives for each x_i:
+            Cov_{z~q(z|x_i)} [ dU/dλ ]
+
+    Misc
+    ----
+    step_index : int
+        Logging step counter.
+    """
+    dUdL_z_by_x: Any
+    dUdL_xz: Any
+    x_weight: NotRequired[Any]
+    d2U_z_by_x: NotRequired[Any]
+    d2U_xz: NotRequired[Any]
+    dUdLdUdL_xz: NotRequired[Any]
+    cov_z_by_x: NotRequired[Any]
+    step_index: NotRequired[int]
+
+
+class CDREMOut(TypedDict, total=False):
+    """
+    Return schema for CDREMTrainerAnalytic.step.
+
+    Common keys
+    ----------
+    name : str
+    grad : np.ndarray
+    hessian : np.ndarray | None
+    update : np.ndarray
+    meta : dict
+
+    CDREM-specific keys
+    -------------------
+    dUdL_pos : np.ndarray
+        Positive-phase derivative E_xE_{z|x}[dU/dλ].
+    dUdL_neg : np.ndarray
+        Negative-phase derivative E_{x,z}[dU/dλ].
+    d2U_pos : np.ndarray, optional
+        Positive-phase second-derivative average E_xE_{z|x}[d²U].
+    d2U_neg : np.ndarray, optional
+        Negative-phase second-derivative average E_{x,z}[d²U].
+    cov_neg : np.ndarray, optional
+        Joint covariance Cov_{x,z}[dU/dλ].
+    cov_pos_cond : np.ndarray, optional
+        Weighted conditional covariance E_x Cov_{z|x}[dU/dλ].
+    """
+    name: str
+    grad: Any
+    hessian: NotRequired[Any]
+    update: Any
+    dUdL_pos: Any
+    dUdL_neg: Any
+    d2U_pos: NotRequired[Any]
+    d2U_neg: NotRequired[Any]
+    cov_neg: NotRequired[Any]
+    cov_pos_cond: NotRequired[Any]
+    meta: Dict[str, Any]
+
+
 class MultiOut(TypedDict, total=False):
     """Return schema for MultiTrainerAnalytic.step."""
     mode: str
@@ -186,28 +332,6 @@ class MultiOut(TypedDict, total=False):
     sub: List[Dict[str, Any]]
     meta: Dict[str, Any]
 
-class MultiStepBatch(TypedDict, total=False):
-    """Input schema for MultiTrainerAnalytic.step.
-
-    Required keys
-    -------------
-    batches : Sequence[dict]
-        One batch per sub-trainer; batches[i] must satisfy trainers[i].BATCH_SCHEMA.
-
-    Optional keys
-    -------------
-    return_keys_list : Sequence[Sequence[str]]
-        Key filter for returned sub-trainer outputs.
-
-    Notes
-    -----
-    - Frame-parallel dUdL options are specified *inside each sub-batch* (not here):
-        ``parallel_dUdL`` / ``dUdL_n_parts`` / ``dUdL_n_workers``.
-      MultiTrainerAnalytic does not interpret them; it forwards batches to trainers.
-    """
-    batches: Any
-    return_keys_list: NotRequired[Any]
-
 from .base import BaseTrainer
 from .utils import optimizer_accepts_hessian
 from ..utils.compute import (
@@ -216,7 +340,8 @@ from ..utils.compute import (
     d2UdLjdLk_Matrix,
     dUdLj_dUdLk_Matrix,
     Hessian,
-    dUdLByBin,
+    dUdLByBin, dUdL_parallel,
+
 )
 
 
@@ -243,15 +368,22 @@ class REMTrainerAnalytic(BaseTrainer):
     # ---- Public schema objects (for documentation / validation) ----
     # These describe the expected `batch` dict and returned `out` dict keys.
     BATCH_SCHEMA: Dict[str, Any] = {
-        "AA": {
-            "dist": "required; per-frame AA features passed to dUdLByFrame(potential, dist)",
-            "weight": "optional; per-frame AA weights for reweighting; shape (n_frames,)",
-        },
         "CG": {
             "dist": "required; per-frame CG features passed to dUdLByFrame(potential, dist)",
             "weight": "optional; per-frame CG weights for reweighting; shape (n_frames,)",
         },
+        "recompute_dUdL_AA": "optional bool; default True; if True, recompute AA derivatives from AA['dist']; if False, read precomputed AA derivatives from batch['dUdL_AA'] (and batch['d2U_AA'] when Hessian is needed)",
+        "AA": {
+            "dist": "required when recompute_dUdL_AA=True; per-frame AA features passed to dUdLByFrame(potential, dist)",
+            "weight": "optional; per-frame AA weights for reweighting; shape (n_frames,)",
+        },
+        "dUdL_AA": "required when recompute_dUdL_AA=False; precomputed AA ensemble average <dU/dλ>_AA",
+        "d2U_AA": "required when recompute_dUdL_AA=False and optimizer_accepts_hessian is True; precomputed AA second-derivative matrix used in Hessian construction",
         "step_index": "optional int; logging step counter (TensorBoard); default 0",
+        "parallel_dUdL": "optional bool; default False; if True and dist is a dict (Pair2DistanceByFrame), compute dUdL in parallel via dUdL_parallel() for recomputed paths",
+        "dUdL_n_parts": "optional int; default 8; number of frame chunks for dUdL_parallel()",
+        "dUdL_n_workers": "optional int; default None; number of worker processes for dUdL_parallel()",
+
     }
 
     RETURN_SCHEMA: Dict[str, Any] = {
@@ -270,74 +402,243 @@ class REMTrainerAnalytic(BaseTrainer):
         return {"batch": cls.BATCH_SCHEMA, "return": cls.RETURN_SCHEMA}
     @staticmethod
     def make_batch(
-        AA_dist,
         CG_dist,
+        AA_dist=None,
+        dUdL_AA=None,
+        d2U_AA=None,
         AA_weight=None,
         CG_weight=None,
+        recompute_dUdL_AA: bool = True,
         step_index: int = 0,
+        parallel_dUdL: bool = False,
+        dUdL_n_parts: int = 8,
+        dUdL_n_workers: Optional[int] = None,
     ) -> REMBatch:
         """
         Build a REMBatch dict for REMTrainerAnalytic.step().
 
+        This helper keeps call sites explicit and stable as the trainer evolves.
+
         Parameters
         ----------
-        AA_dist : array-like
-            Per-frame AA features (e.g., distances). Passed to dUdLByFrame(potential, AA_dist).
-        CG_dist : array-like
-            Per-frame CG features. Passed to dUdLByFrame(potential, CG_dist).
-        AA_weight : array-like, optional
-            Per-frame weights for AA reweighting; shape (n_frames,).
-        CG_weight : array-like, optional
-            Per-frame weights for CG reweighting; shape (n_frames,).
-        step_index : int, default 0
-            Logging step counter.
+        CG_dist
+            Per-frame CG features. Passed to ``dUdLByFrame(potential, CG_dist)``
+            (or ``dUdL_parallel`` if enabled).
+        AA_dist
+            Per-frame AA features. Required when ``recompute_dUdL_AA=True``.
+            Passed to ``dUdLByFrame(potential, AA_dist)`` (or ``dUdL_parallel``
+            if enabled).
+        dUdL_AA
+            Precomputed AA ensemble average ``<dU/dλ>_AA``. Required when
+            ``recompute_dUdL_AA=False``.
+        d2U_AA
+            Precomputed AA second-derivative matrix used in the REM Hessian.
+            Only needed when ``recompute_dUdL_AA=False`` and the optimizer
+            requires a Hessian.
+        AA_weight, CG_weight
+            Optional per-frame weights for reweighting the AA/CG ensemble averages.
+            Shape must match the canonical frame ordering used by ``dUdLByFrame``:
+            ``sorted(dist.keys())`` when ``dist`` is a dict.
+        recompute_dUdL_AA
+            Controls AA-side derivative reuse.
+
+            - ``True``: recompute ``dUdL_AA`` from ``AA_dist`` each step.
+              If the optimizer accepts a Hessian, also recompute the AA
+              second-derivative term from ``AA_dist``.
+            - ``False``: read precomputed ``dUdL_AA`` from the batch.
+              If the optimizer accepts a Hessian, ``d2U_AA`` must also be
+              supplied in the batch.
+        step_index
+            Logging step counter (e.g., TensorBoard global step).
+
+        Parallel dUdL options
+        ---------------------
+        parallel_dUdL
+            If True, and ``AA_dist`` / ``CG_dist`` are dicts keyed by frame_id
+            (Pair2DistanceByFrame-style), compute dUdL via multiprocessing using
+            ``dUdL_parallel`` for recomputed paths.
+        dUdL_n_parts
+            Number of frame chunks (work units) used by ``dUdL_parallel``.
+            A good default is ~ ``n_workers`` or ``2*n_workers``.
+        dUdL_n_workers
+            Number of worker processes used by ``dUdL_parallel``. If None, the
+            executor chooses a default (typically CPU count).
 
         Returns
         -------
-        batch : REMBatch
-            {
-              "AA": {"dist": AA_dist, "weight": AA_weight?},
-              "CG": {"dist": CG_dist, "weight": CG_weight?},
-              "step_index": step_index,
-            }
+        REMBatch
+            Batch dictionary in either recompute mode or cached-AA mode.
+
+        Notes
+        -----
+        - The trainer will automatically fall back to the serial path if
+          ``parallel_dUdL`` is True but the provided ``dist`` is not dict-like.
+        - When providing weights with dict-like ``dist``, make sure weights are
+          aligned to ``sorted(dist.keys())`` (or pass weights as a dict keyed by
+          frame_id to avoid ordering issues).
         """
         batch: REMBatch = {
-            "AA": {"dist": AA_dist},
             "CG": {"dist": CG_dist},
+            "recompute_dUdL_AA": bool(recompute_dUdL_AA),
             "step_index": int(step_index),
+            "parallel_dUdL": bool(parallel_dUdL),
+            "dUdL_n_parts": int(dUdL_n_parts),
         }
-        if AA_weight is not None:
-            batch["AA"]["weight"] = AA_weight
+
+        if recompute_dUdL_AA:
+            if AA_dist is None:
+                raise ValueError("AA_dist is required when recompute_dUdL_AA=True.")
+            batch["AA"] = {"dist": AA_dist}
+            if AA_weight is not None:
+                batch["AA"]["weight"] = AA_weight
+        else:
+            if dUdL_AA is None:
+                raise ValueError("dUdL_AA is required when recompute_dUdL_AA=False.")
+            batch["dUdL_AA"] = dUdL_AA
+            if d2U_AA is not None:
+                batch["d2U_AA"] = d2U_AA
+
         if CG_weight is not None:
             batch["CG"]["weight"] = CG_weight
+        if dUdL_n_workers is not None:
+            batch["dUdL_n_workers"] = int(dUdL_n_workers)
         return batch
 
 
 
     def step(self, batch: REMBatch, apply_update: bool = True) -> REMOut:
+        """
+        Execute one REM optimization step.
+
+        Parameters
+        ----------
+        batch : REMBatch
+            REM batch dictionary.
+
+            AA-side data can be provided in two modes:
+
+            1. Recompute mode (default)
+               ``batch["recompute_dUdL_AA"] = True``
+               Requires ``batch["AA"]["dist"]`` and optionally ``batch["AA"]["weight"]``.
+
+            2. Cached-AA mode
+               ``batch["recompute_dUdL_AA"] = False``
+               Requires precomputed ``batch["dUdL_AA"]``.
+               If the optimizer accepts a Hessian, also requires
+               ``batch["d2U_AA"]``.
+
+            CG-side data is always recomputed from ``batch["CG"]["dist"]``.
+
+        apply_update : bool, default=True
+            If True, apply the optimizer step and update the potential.
+            If False, run in dry-run mode and return ``update=zeros_like(grad)``.
+
+        Returns
+        -------
+        REMOut
+            Dictionary with standardized REM outputs, including ``grad``,
+            optional ``hessian``, and the AA/CG ensemble averages of ``dU/dλ``.
+
+        Notes
+        -----
+        ``recompute_dUdL_AA`` controls AA-side derivative reuse. When the
+        optimizer requires a Hessian, the same flag also controls whether the
+        AA second-derivative term is recomputed from ``AA["dist"]`` or read
+        from precomputed ``d2U_AA``.
+        """
         # --- Parse batch ---
         assert isinstance(batch, dict), "REMTrainerAnalytic.step expects batch as a dict."
-        AA = batch["AA"]
         CG = batch["CG"]
         step_index = _get_step_index(batch)
+        recompute_dUdL_AA = bool(batch.get("recompute_dUdL_AA", True))
+        need_hessian = optimizer_accepts_hessian(self.optimizer)
 
-        # --- Compute per-frame derivatives in AA/CG ensembles ---
-        dUdL_AA_frame = dUdLByFrame(self.potential, AA["dist"])
-        dUdL_CG_frame = dUdLByFrame(self.potential, CG["dist"])
-
-        # --- Ensemble averages (support reweighting) ---
-        w_AA = AA.get("weight", None)
         w_CG = CG.get("weight", None)
-        dUdL_AA = dUdL(dUdL_AA_frame, w_AA)
-        dUdL_CG = dUdL(dUdL_CG_frame, w_CG)
+        AA = batch.get("AA", None)
+        w_AA = None if AA is None else AA.get("weight", None)
+
+        # --- Optional parallel dUdL evaluation (dict/PBDist only) ---
+        # We only enable multiprocessing when:
+        #   (1) batch requests it, AND
+        #   (2) dist is a dict keyed by frame_id (Pair2DistanceByFrame-style).
+        parallel_dUdL = bool(batch.get("parallel_dUdL", False))
+        n_parts = int(batch.get("dUdL_n_parts", 8))
+        n_workers = batch.get("dUdL_n_workers", None)
+        if n_workers is not None:
+            n_workers = int(n_workers)
+
+        CG_dist = CG["dist"]
+
+        # --- AA-side derivatives ---
+        if recompute_dUdL_AA:
+            if AA is None or "dist" not in AA:
+                raise KeyError("batch['AA']['dist'] is required when recompute_dUdL_AA=True.")
+            AA_dist = AA["dist"]
+
+            # AA gradient term: only needs <dU/dλ>_AA.
+            if parallel_dUdL and isinstance(AA_dist, dict):
+                dUdL_AA = dUdL_parallel(
+                    self.potential,
+                    AA_dist,
+                    frame_weight=w_AA,
+                    n_parts=n_parts,
+                    n_workers=n_workers,
+                    mode="avg",
+                )
+            else:
+                dUdL_AA_frame = dUdLByFrame(self.potential, AA_dist)
+                dUdL_AA = dUdL(dUdL_AA_frame, w_AA)
+
+            if need_hessian:
+                d2U_AA = d2UdLjdLk_Matrix(self.potential, AA_dist, w_AA)
+            else:
+                d2U_AA = None
+        else:
+            if "dUdL_AA" not in batch:
+                raise KeyError("batch['dUdL_AA'] is required when recompute_dUdL_AA=False.")
+            dUdL_AA = batch["dUdL_AA"]
+            if need_hessian:
+                if "d2U_AA" not in batch:
+                    raise KeyError(
+                        "batch['d2U_AA'] is required when recompute_dUdL_AA=False "
+                        "and the optimizer requires a Hessian."
+                    )
+                d2U_AA = batch["d2U_AA"]
+            else:
+                d2U_AA = None
+
+        # --- CG-side derivatives ---
+        # If Hessian is needed, we must materialize dUdL_CG_frame (for <g_j g_k> term).
+        if parallel_dUdL and isinstance(CG_dist, dict):
+            if need_hessian:
+                dUdL_CG, dUdL_CG_frame, frames_sorted = dUdL_parallel(
+                    self.potential,
+                    CG_dist,
+                    frame_weight=w_CG,
+                    n_parts=n_parts,
+                    n_workers=n_workers,
+                    mode="frame",
+                )
+            else:
+                dUdL_CG = dUdL_parallel(
+                    self.potential,
+                    CG_dist,
+                    frame_weight=w_CG,
+                    n_parts=n_parts,
+                    n_workers=n_workers,
+                    mode="avg",
+                )
+                dUdL_CG_frame = None
+        else:
+            dUdL_CG_frame = dUdLByFrame(self.potential, CG_dist)
+            dUdL_CG = dUdL(dUdL_CG_frame, w_CG)
 
         # --- REM gradient ---
         grad = self.beta * (dUdL_AA - dUdL_CG)
 
         # --- Optional Hessian ---
         hessian = None
-        if optimizer_accepts_hessian(self.optimizer):
-            d2U_AA = d2UdLjdLk_Matrix(self.potential, AA["dist"], w_AA)
+        if need_hessian:
             d2U_CG = d2UdLjdLk_Matrix(self.potential, CG["dist"], w_CG)
             dUU_CG = dUdLj_dUdLk_Matrix(dUdL_CG_frame, w_CG)
             hessian = Hessian(self.beta, d2U_AA, d2U_CG, dUU_CG, dUdL_CG)
@@ -374,16 +675,52 @@ class REMTrainerAnalytic(BaseTrainer):
                 "step_index": step_index,
                 "grad_norm": float(np.linalg.norm(grad)),
                 "update_norm": float(np.linalg.norm(update)),
+                "recompute_dUdL_AA": recompute_dUdL_AA,
+                "need_hessian": need_hessian,
             },
         }
 
 
 class MSETrainerAnalytic(BaseTrainer):
-    """Analytic PMF-matching trainer with an MSE-like objective.
+    """Analytic PMF-matching trainer with a gauge-fixed mean-squared objective.
 
-    This follows your current implementation:
-      - shift pmf_CG by a gauge constant c that minimizes mismatch (optionally weighted)
-      - loss is defined as || pmf_AA - (pmf_CG - c) ||_2  (Euclidean norm)
+    Let
+
+        ΔF(s) = F_CG(s) - c - F_AA(s)
+
+    where ``c`` is a gauge constant used to remove the arbitrary additive offset
+    of the PMF. This trainer chooses ``c`` consistently with the loss definition,
+    so the gauge fixing and the objective always use the same weighting.
+
+    Unweighted objective (default)
+        ``loss = 1/2 Σ_s [F_CG(s) - c - F_AA(s)]^2``
+
+        with gauge shift
+
+        ``c = mean_s [F_CG(s) - F_AA(s)]``
+
+    AA-weighted objective
+        ``loss = 1/2 Σ_s p_AA(s) [F_CG(s) - c - F_AA(s)]^2``
+
+        where ``p_AA(s)`` is reconstructed from the reference PMF via
+
+        ``p_AA(s) ∝ exp(-beta * F_AA(s))``
+
+        followed by normalization over bins, and the gauge shift is
+
+        ``c = Σ_s p_AA(s) [F_CG(s) - F_AA(s)]``
+
+    Using
+
+        ``∂F_CG(s)/∂λ = ⟨dU/dλ⟩_{CG|s} - ⟨dU/dλ⟩_CG``
+
+    the gradient is
+
+    Unweighted gradient
+        ``∂loss/∂λ = Σ_s ΔF(s) * (⟨dU/dλ⟩_{CG|s} - ⟨dU/dλ⟩_CG)``
+
+    AA-weighted gradient
+        ``∂loss/∂λ = Σ_s p_AA(s) ΔF(s) * (⟨dU/dλ⟩_{CG|s} - ⟨dU/dλ⟩_CG)``
 
     Returns a dict with standardized keys (see module docstring).
     """
@@ -396,18 +733,29 @@ class MSETrainerAnalytic(BaseTrainer):
             "dist": "required; per-frame CG features passed to dUdLByFrame(potential, dist)",
             "weight": "optional; per-frame CG weights for reweighting; shape (n_frames,)",
         },
-        "CG_bin_idx_frame": "required np.ndarray; shape (n_frames,); integer bin index per frame (0..n_bins-1)",
-        "weighted_gauge": "optional bool; default False; whether gauge shift uses CG bin probabilities",
+        "CG_bin_idx_frame": "required np.ndarray or dict; integer bin index per frame (0..n_bins-1)",
+        "weighted_loss": (
+            "optional bool; default False; if False use the unweighted objective "
+            "loss = 1/2 Σ_s [F_CG(s)-c-F_AA(s)]^2 with c = mean_s[F_CG(s)-F_AA(s)]; "
+            "if True use the AA-weighted objective loss = 1/2 Σ_s p_AA(s)[F_CG(s)-c-F_AA(s)]^2, "
+            "where p_AA(s) is reconstructed from pmf_AA as p_AA(s) ∝ exp(-beta * F_AA(s)) and "
+            "c = Σ_s p_AA(s)[F_CG(s)-F_AA(s)]. The gradient uses the same weighting as the loss."
+        ),
+        "beta": "optional float; default 1.0; inverse-temperature factor used to reconstruct p_AA(s) ∝ exp(-beta * F_AA(s)) when weighted_loss=True",
         "step_index": "optional int; logging step counter; default 0",
+        "parallel_dUdL": "optional bool; default False; if True and dist is a dict (Pair2DistanceByFrame), compute dUdL in parallel via dUdL_parallel()",
+        "dUdL_n_parts": "optional int; default 8; number of frame chunks for dUdL_parallel()",
+        "dUdL_n_workers": "optional int; default None; number of worker processes for dUdL_parallel()",
+
     }
 
     RETURN_SCHEMA: Dict[str, Any] = {
         "name": 'str; always "MSE"',
-        "loss": "float; L2 norm mismatch ||pmf_AA - (pmf_CG - c)||_2 (note: not mean-squared unless changed)",
-        "grad": "np.ndarray; shape (n_params,); gradient of PMF mismatch wrt λ",
+        "loss": "float; gauge-fixed PMF mismatch objective; either 1/2 Σ_s [F_CG(s)-c-F_AA(s)]^2 or 1/2 Σ_s p_AA(s)[F_CG(s)-c-F_AA(s)]^2 when weighted_loss=True",
+        "grad": "np.ndarray; shape (n_params,); gradient of the gauge-fixed PMF mismatch wrt λ, weighted consistently with the chosen loss",
         "hessian": "None; reserved for uniform interface",
         "update": "np.ndarray; shape (n_params,); optimizer update if apply_update=True else zeros_like(grad)",
-        "meta": "dict; diagnostics (step_index, gauge_shift, weighted_gauge, grad_norm, update_norm, ...)",
+        "meta": "dict; diagnostics (step_index, gauge_shift, weighted_loss, beta, grad_norm, update_norm, ...)",
     }
 
     @classmethod
@@ -421,96 +769,218 @@ class MSETrainerAnalytic(BaseTrainer):
         CG_dist,
         CG_bin_idx_frame,
         CG_weight=None,
-        weighted_gauge: bool = False,
+        weighted_loss: bool = False,
+        beta: float = 1.0,
         step_index: int = 0,
+        parallel_dUdL: bool = False,
+        dUdL_n_parts: int = 8,
+        dUdL_n_workers: Optional[int] = None,
     ) -> MSEBatch:
         """
         Build a MSEBatch dict for MSETrainerAnalytic.step().
 
         Parameters
         ----------
-        pmf_AA : np.ndarray, shape (n_bins,)
-            Target/reference PMF.
-        pmf_CG : np.ndarray, shape (n_bins,)
-            Current CG PMF on the same bins.
-        CG_dist : array-like
-            Per-frame CG features (e.g., distances). Passed to dUdLByFrame(potential, CG_dist).
-        CG_bin_idx_frame : np.ndarray, shape (n_frames,)
-            Bin index (0..n_bins-1) for each CG frame.
-        CG_weight : array-like, optional
-            Per-frame CG weights for reweighting; shape (n_frames,).
-        weighted_gauge : bool, default False
-            Whether to use probability-weighted gauge shift.
-        step_index : int, default 0
+        pmf_AA, pmf_CG
+            PMFs defined on the same bins; shape (n_bins,).
+        CG_dist
+            Per-frame CG features (e.g., Pair2DistanceByFrame). Passed to
+            ``dUdLByFrame(potential, CG_dist)`` (or ``dUdL_parallel`` if enabled).
+        CG_bin_idx_frame
+            Bin index per frame. Accepted formats:
+              - np.ndarray of shape (n_frames,), aligned to the canonical frame ordering
+                of ``CG_dist`` (``sorted(CG_dist.keys())`` when dict-like), OR
+              - dict {frame_id: bin_idx} (recommended when CG_dist is dict-like)
+        CG_weight
+            Optional per-frame weights for CG reweighting. Same alignment rules as
+            ``CG_bin_idx_frame``.
+        weighted_loss
+            Controls both the objective and the gauge shift so they remain
+            mathematically consistent.
+
+            - ``False``:
+              ``loss = 1/2 Σ_s [F_CG(s)-c-F_AA(s)]^2``
+              with ``c = mean_s[F_CG(s)-F_AA(s)]``.
+
+            - ``True``:
+              ``loss = 1/2 Σ_s p_AA(s)[F_CG(s)-c-F_AA(s)]^2``
+              with ``p_AA(s) ∝ exp(-beta * F_AA(s))`` and
+              ``c = Σ_s p_AA(s)[F_CG(s)-F_AA(s)]``.
+
+              The gradient uses the same ``p_AA(s)`` weighting bin by bin.
+        beta
+            Inverse-temperature factor used to reconstruct
+            ``p_AA(s) ∝ exp(-beta * F_AA(s))`` when ``weighted_loss=True``.
+            Ignored when ``weighted_loss=False``.
+        step_index
             Logging step counter.
+
+        Parallel dUdL options
+        ---------------------
+        parallel_dUdL
+            If True and ``CG_dist`` is dict-like, compute per-frame dUdL in parallel
+            using multiprocessing via ``dUdL_parallel(mode="frame")``.
+        dUdL_n_parts
+            Number of frame chunks (work units) used by ``dUdL_parallel``.
+            A good default is ~ ``dUdL_n_workers`` or ``2*dUdL_n_workers``.
+        dUdL_n_workers
+            Number of worker processes used by ``dUdL_parallel``. If None, the
+            executor chooses a default (typically CPU count).
 
         Returns
         -------
-        batch : MSEBatch
+        MSEBatch
             {
               "pmf_AA": pmf_AA,
               "pmf_CG": pmf_CG,
               "CG": {"dist": CG_dist, "weight": CG_weight?},
               "CG_bin_idx_frame": CG_bin_idx_frame,
-              "weighted_gauge": weighted_gauge,
+              "weighted_loss": weighted_loss,
+              "beta": beta,
               "step_index": step_index,
+              "parallel_dUdL": parallel_dUdL,
+              "dUdL_n_parts": dUdL_n_parts,
+              "dUdL_n_workers": dUdL_n_workers,
             }
+
+        Notes
+        -----
+        - MSE needs per-frame derivatives to compute per-bin conditional averages,
+          so the trainer uses ``mode="frame"`` when parallelizing.
+        - If you pass ``CG_bin_idx_frame`` as a dict, the trainer will align it to
+          the returned ``frames_sorted`` automatically.
         """
         batch: MSEBatch = {
             "pmf_AA": pmf_AA,
             "pmf_CG": pmf_CG,
             "CG": {"dist": CG_dist},
             "CG_bin_idx_frame": CG_bin_idx_frame,
-            "weighted_gauge": bool(weighted_gauge),
+            "weighted_loss": bool(weighted_loss),
+            "beta": float(beta),
             "step_index": int(step_index),
+            "parallel_dUdL": bool(parallel_dUdL),
+            "dUdL_n_parts": int(dUdL_n_parts),
         }
         if CG_weight is not None:
             batch["CG"]["weight"] = CG_weight
+        if dUdL_n_workers is not None:
+            batch["dUdL_n_workers"] = int(dUdL_n_workers)
         return batch
 
 
 
     def step(self, batch: MSEBatch, apply_update: bool = True) -> MSEOut:
+        """
+        Execute one PMF-matching MSE optimization step.
+
+        Parameters
+        ----------
+        batch : MSEBatch
+            MSE batch dictionary.
+
+            ``weighted_loss`` determines both the loss and the gauge shift:
+
+            - ``False``:
+              ``loss = 1/2 Σ_s [F_CG(s)-c-F_AA(s)]^2``
+              with ``c = mean_s[F_CG(s)-F_AA(s)]``.
+
+            - ``True``:
+              ``loss = 1/2 Σ_s p_AA(s)[F_CG(s)-c-F_AA(s)]^2``
+              where ``p_AA(s) ∝ exp(-beta * F_AA(s))`` and is normalized over bins,
+              with ``c = Σ_s p_AA(s)[F_CG(s)-F_AA(s)]``.
+
+            In the weighted case, the gradient is weighted by the same ``p_AA(s)``
+            factors bin by bin.
+
+        apply_update : bool, default=True
+            If True, apply the optimizer step and update the potential.
+            If False, run in dry-run mode and return ``update=zeros_like(grad)``.
+
+        Returns
+        -------
+        MSEOut
+            Dictionary with standardized MSE outputs, including the scalar loss,
+            gradient, and diagnostics describing whether the weighted or
+            unweighted objective was used.
+        """
         assert isinstance(batch, dict), "MSETrainerAnalytic.step expects batch as a dict."
-        pmf_AA = batch["pmf_AA"]
-        pmf_CG = batch["pmf_CG"]
+        pmf_AA = np.asarray(batch["pmf_AA"], dtype=float)
+        pmf_CG = np.asarray(batch["pmf_CG"], dtype=float)
         CG = batch["CG"]
         CG_bin_idx_frame = batch["CG_bin_idx_frame"]
-        weighted_gauge = bool(batch.get("weighted_gauge", False))
+        weighted_loss = bool(batch.get("weighted_loss", False))
+        beta = float(batch.get("beta", 1.0))
         step_index = _get_step_index(batch)
 
-        # --- Compute <dU/dλ> for CG ---
-        dUdL_CG_frame = dUdLByFrame(self.potential, CG["dist"])
+        # --- Compute dU/dλ for CG (optionally in parallel) ---
         w_CG = CG.get("weight", None)
-        dUdL_CG = dUdL(dUdL_CG_frame, w_CG)
+
+        parallel_dUdL = bool(batch.get("parallel_dUdL", False))
+        n_parts = int(batch.get("dUdL_n_parts", 8))
+        n_workers = batch.get("dUdL_n_workers", None)
+        if n_workers is not None:
+            n_workers = int(n_workers)
+
+        CG_dist = CG["dist"]
+
+        # MSE requires per-frame derivatives for dUdLByBin, so we need mode="frame".
+        # If CG_dist is not dict-like, fall back to the original serial path.
+        if parallel_dUdL and isinstance(CG_dist, dict):
+            dUdL_CG, dUdL_CG_frame, frames_sorted = dUdL_parallel(
+                self.potential,
+                CG_dist,
+                frame_weight=w_CG,
+                n_parts=n_parts,
+                n_workers=n_workers,
+                mode="frame",
+            )
+
+            # IMPORTANT: CG_bin_idx_frame must be aligned to frames_sorted.
+            # If the caller provides bin indices as a dict {frame_id: bin}, align here.
+            if isinstance(CG_bin_idx_frame, dict):
+                CG_bin_idx_frame = np.array([CG_bin_idx_frame[fr] for fr in frames_sorted], dtype=int)
+        else:
+            dUdL_CG_frame = dUdLByFrame(self.potential, CG_dist)
+            dUdL_CG = dUdL(dUdL_CG_frame, w_CG)
 
         # --- Per-bin conditional averages ---
-        dUdL_CG_bin, p_CG_bin, dUdL_CG_given_bin = dUdLByBin(
+        _, _, dUdL_CG_given_bin = dUdLByBin(
             dUdL_CG_frame,
             CG_bin_idx_frame,
             w_CG,
         )
 
-        # --- Gauge shift for PMF_CG ---
-        if weighted_gauge:
-            q = np.array([p_CG_bin.get(i, 0.0) for i in range(len(pmf_CG))], dtype=float)
-            c = float((pmf_CG - pmf_AA) @ q)
+        # --- Reconstruct AA bin probabilities from PMF_AA when needed ---
+        if weighted_loss:
+            pmf_AA_shift = pmf_AA - np.min(pmf_AA)
+            p_AA = np.exp(-beta * pmf_AA_shift)
+            p_AA_sum = np.sum(p_AA)
+            if p_AA_sum <= 0.0 or not np.isfinite(p_AA_sum):
+                raise ValueError("Failed to reconstruct p_AA from pmf_AA; check beta and PMF values.")
+            p_AA = p_AA / p_AA_sum
+        else:
+            p_AA = None
+
+        # --- Gauge shift for PMF_CG (must match the loss weighting) ---
+        if weighted_loss:
+            c = float(np.sum((pmf_CG - pmf_AA) * p_AA))
         else:
             c = float(np.mean(pmf_CG - pmf_AA))
         pmf_CG_shifted = pmf_CG - c
 
-        # --- Loss (L2 norm) ---
-        loss = float(np.linalg.norm(pmf_AA - pmf_CG_shifted))
+        # --- Loss ---
+        delta = pmf_CG_shifted - pmf_AA
+        if weighted_loss:
+            loss = float(0.5 * np.sum(p_AA * (delta ** 2)))
+        else:
+            loss = float(0.5 * np.sum(delta ** 2))
 
         # --- Gradient of loss w.r.t parameters ---
+        grad = np.zeros_like(dUdL_CG, dtype=float)
         idx_set = set(CG_bin_idx_frame.tolist()) if hasattr(CG_bin_idx_frame, "tolist") else set(CG_bin_idx_frame)
-        dErrdL_bin: Dict[int, np.ndarray] = {}
         for idx in idx_set:
-            dErrdL_bin[idx] = (pmf_CG_shifted[idx] - pmf_AA[idx]) * (dUdL_CG_given_bin[idx] - dUdL_CG)
-
-        grad = 0
-        for idx in range(len(pmf_AA)):
-            grad += dErrdL_bin.get(idx, 0)
+            weight_bin = p_AA[idx] if weighted_loss else 1.0
+            grad += weight_bin * delta[idx] * (dUdL_CG_given_bin[idx] - dUdL_CG)
 
         # --- Optimization step (optional) ---
         if apply_update:
@@ -537,11 +1007,329 @@ class MSETrainerAnalytic(BaseTrainer):
             "meta": {
                 "step_index": step_index,
                 "gauge_shift": c,
-                "weighted_gauge": weighted_gauge,
+                "weighted_loss": weighted_loss,
+                "beta": beta,
                 "grad_norm": float(np.linalg.norm(grad)),
                 "update_norm": float(np.linalg.norm(update)),
             },
         }
+
+
+class CDREMTrainerAnalytic(BaseTrainer):
+    """Analytic latent-variable / CDREM trainer.
+
+    Implements the latent-variable CDREM gradient
+
+        grad = β ( E_x E_{z|x}[dU/dλ] - E_{x,z}[dU/dλ] )
+
+    and, when the optimizer requires a Hessian and the needed second-order
+    statistics are provided in the batch, the latent-variable Hessian
+
+        H = β ( E_xE_{z|x}[d²U] - E_{x,z}[d²U]
+                + β ( Cov_{x,z}[dU/dλ] - E_x Cov_{z|x}[dU/dλ] ) )
+
+    The second-order part is optional at the batch level. However, if the
+    optimizer accepts a Hessian, the required second-order statistics must be
+    provided; otherwise this trainer raises a ValueError.
+    """
+
+    BATCH_SCHEMA: Dict[str, Any] = {
+        "dUdL_z_by_x": (
+            "required np.ndarray; shape (n_x, n_params); row i is "
+            "E_{z~q(z|x_i)}[dU/dλ]"
+        ),
+        "dUdL_xz": (
+            "required np.ndarray; shape (n_params,); "
+            "E_{(x,z)~q(x,z)}[dU/dλ]"
+        ),
+        "x_weight": (
+            "optional np.ndarray; shape (n_x,); weight for each x-subsample; "
+            "if omitted, uniform average over x is used"
+        ),
+        "d2U_z_by_x": (
+            "optional np.ndarray; shape (n_x, n_params, n_params); row i is "
+            "E_{z~q(z|x_i)}[d²U/dλ_i dλ_j]; required if optimizer needs Hessian"
+        ),
+        "d2U_xz": (
+            "optional np.ndarray; shape (n_params, n_params); "
+            "E_{(x,z)~q(x,z)}[d²U/dλ_i dλ_j]; required if optimizer needs Hessian"
+        ),
+        "dUdLdUdL_xz": (
+            "optional np.ndarray; shape (n_params, n_params); "
+            "E_{(x,z)~q(x,z)}[(dU/dλ)(dU/dλ)^T]; required if optimizer needs Hessian"
+        ),
+        "cov_z_by_x": (
+            "optional np.ndarray; shape (n_x, n_params, n_params); row i is "
+            "Cov_{z~q(z|x_i)}[dU/dλ]; required if optimizer needs Hessian"
+        ),
+        "step_index": "optional int; logging step counter; default 0",
+    }
+
+    RETURN_SCHEMA: Dict[str, Any] = {
+        "name": 'str; always "CDREM"',
+        "grad": (
+            "np.ndarray; shape (n_params,); "
+            "beta*(E_xE_{z|x}[dU/dλ] - E_{x,z}[dU/dλ])"
+        ),
+        "hessian": (
+            "np.ndarray|None; shape (n_params,n_params); latent-variable Hessian "
+            "if optimizer_accepts_hessian is True and second-order batch stats are provided"
+        ),
+        "update": (
+            "np.ndarray; shape (n_params,); "
+            "optimizer update if apply_update=True else zeros_like(grad)"
+        ),
+        "dUdL_pos": (
+            "np.ndarray; shape (n_params,); positive-phase derivative "
+            "E_xE_{z|x}[dU/dλ]"
+        ),
+        "dUdL_neg": (
+            "np.ndarray; shape (n_params,); negative-phase derivative "
+            "E_{x,z}[dU/dλ]"
+        ),
+        "d2U_pos": (
+            "optional np.ndarray; shape (n_params,n_params); positive-phase "
+            "second-derivative average E_xE_{z|x}[d²U]"
+        ),
+        "d2U_neg": (
+            "optional np.ndarray; shape (n_params,n_params); negative-phase "
+            "second-derivative average E_{x,z}[d²U]"
+        ),
+        "cov_neg": (
+            "optional np.ndarray; shape (n_params,n_params); joint covariance "
+            "Cov_{x,z}[dU/dλ]"
+        ),
+        "cov_pos_cond": (
+            "optional np.ndarray; shape (n_params,n_params); weighted conditional "
+            "covariance E_x Cov_{z|x}[dU/dλ]"
+        ),
+        "meta": "dict; diagnostics (step_index, grad_norm, update_norm, n_x, ...)",
+    }
+
+    @classmethod
+    def schema(cls) -> Dict[str, Any]:
+        """Return a dict with `batch` and `return` schema for introspection."""
+        return {"batch": cls.BATCH_SCHEMA, "return": cls.RETURN_SCHEMA}
+
+    @staticmethod
+    def make_batch(
+        dUdL_z_by_x,
+        dUdL_xz,
+        x_weight=None,
+        d2U_z_by_x=None,
+        d2U_xz=None,
+        dUdLdUdL_xz=None,
+        cov_z_by_x=None,
+        step_index: int = 0,
+    ) -> CDREMBatch:
+        """
+        Build a CDREMBatch dict for CDREMTrainerAnalytic.step().
+
+        Parameters
+        ----------
+        dUdL_z_by_x : np.ndarray, shape (n_x, n_params)
+            Row i is the conditional first-derivative average for one x-subsample:
+                E_{z~q(z|x_i)}[dU/dλ]
+        dUdL_xz : np.ndarray, shape (n_params,)
+            Joint-model first-derivative average:
+                E_{(x,z)~q(x,z)}[dU/dλ]
+        x_weight : np.ndarray, optional, shape (n_x,)
+            Weight for each x-subsample. If None, uniform averaging over x is used.
+        d2U_z_by_x : np.ndarray, optional, shape (n_x, n_params, n_params)
+            Conditional second-derivative average for each x-subsample.
+        d2U_xz : np.ndarray, optional, shape (n_params, n_params)
+            Joint-model second-derivative average.
+        dUdLdUdL_xz : np.ndarray, optional, shape (n_params, n_params)
+            Joint-model second moment of first derivatives.
+        cov_z_by_x : np.ndarray, optional, shape (n_x, n_params, n_params)
+            Conditional covariance of first derivatives for each x-subsample.
+        step_index : int
+            Logging step counter.
+
+        Returns
+        -------
+        CDREMBatch
+            Batch dictionary for CDREMTrainerAnalytic.step().
+        """
+        batch: CDREMBatch = {
+            "dUdL_z_by_x": dUdL_z_by_x,
+            "dUdL_xz": dUdL_xz,
+            "step_index": int(step_index),
+        }
+        if x_weight is not None:
+            batch["x_weight"] = x_weight
+        if d2U_z_by_x is not None:
+            batch["d2U_z_by_x"] = d2U_z_by_x
+        if d2U_xz is not None:
+            batch["d2U_xz"] = d2U_xz
+        if dUdLdUdL_xz is not None:
+            batch["dUdLdUdL_xz"] = dUdLdUdL_xz
+        if cov_z_by_x is not None:
+            batch["cov_z_by_x"] = cov_z_by_x
+        return batch
+
+    def step(self, batch: CDREMBatch, apply_update: bool = True) -> CDREMOut:
+        """
+        Execute one CDREM optimization step.
+
+        First-order statistics are always required. Second-order statistics are
+        optional unless the optimizer accepts a Hessian, in which case they are
+        required and this method raises a ValueError if any are missing.
+
+        Parameters
+        ----------
+        batch : CDREMBatch
+            CDREM batch dictionary.
+        apply_update : bool, default=True
+            If True, apply the optimizer step and update the potential.
+            If False, run in dry-run mode and return update=zeros_like(grad).
+
+        Returns
+        -------
+        CDREMOut
+            Dictionary with standardized CDREM outputs.
+        """
+        assert isinstance(batch, dict), "CDREMTrainerAnalytic.step expects batch as a dict."
+
+        dUdL_z_by_x = np.asarray(batch["dUdL_z_by_x"], dtype=float)
+        dUdL_xz = np.asarray(batch["dUdL_xz"], dtype=float)
+        step_index = _get_step_index(batch)
+        need_hessian = optimizer_accepts_hessian(self.optimizer)
+
+        if dUdL_z_by_x.ndim != 2:
+            raise ValueError(
+                f"batch['dUdL_z_by_x'] must be 2D, got shape {dUdL_z_by_x.shape}"
+            )
+        if dUdL_xz.ndim != 1:
+            raise ValueError(
+                f"batch['dUdL_xz'] must be 1D, got shape {dUdL_xz.shape}"
+            )
+        if dUdL_z_by_x.shape[1] != dUdL_xz.shape[0]:
+            raise ValueError(
+                "Dimension mismatch: dUdL_z_by_x has shape "
+                f"{dUdL_z_by_x.shape}, but dUdL_xz has shape {dUdL_xz.shape}"
+            )
+
+        n_x = dUdL_z_by_x.shape[0]
+        n_params = dUdL_z_by_x.shape[1]
+        if n_x == 0:
+            raise ValueError("batch['dUdL_z_by_x'] must contain at least one x-subsample.")
+
+        x_weight = batch.get("x_weight", None)
+        if x_weight is None:
+            w_x = np.ones(n_x, dtype=float) / float(n_x)
+        else:
+            w_x = np.asarray(x_weight, dtype=float)
+            if w_x.ndim != 1:
+                raise ValueError(
+                    f"batch['x_weight'] must be 1D, got shape {w_x.shape}"
+                )
+            if w_x.shape[0] != n_x:
+                raise ValueError(
+                    f"batch['x_weight'] length {w_x.shape[0]} != n_x {n_x}"
+                )
+            w_sum = float(np.sum(w_x))
+            if w_sum == 0.0:
+                raise ValueError("batch['x_weight'] sums to zero.")
+            w_x = w_x / w_sum
+
+        dUdL_pos = w_x @ dUdL_z_by_x
+        dUdL_neg = dUdL_xz
+        grad = self.beta * (dUdL_pos - dUdL_neg)
+
+        d2U_pos = None
+        d2U_neg = None
+        cov_neg = None
+        cov_pos_cond = None
+        hessian = None
+
+        if need_hessian:
+            required = ["d2U_z_by_x", "d2U_xz", "dUdLdUdL_xz", "cov_z_by_x"]
+            missing = [k for k in required if k not in batch]
+            if missing:
+                raise ValueError(
+                    "CDREMTrainerAnalytic.step requires second-order batch statistics "
+                    "when optimizer_accepts_hessian(self.optimizer) is True. Missing keys: "
+                    + ", ".join(missing)
+                )
+
+            d2U_z_by_x = np.asarray(batch["d2U_z_by_x"], dtype=float)
+            d2U_xz = np.asarray(batch["d2U_xz"], dtype=float)
+            dUdLdUdL_xz = np.asarray(batch["dUdLdUdL_xz"], dtype=float)
+            cov_z_by_x = np.asarray(batch["cov_z_by_x"], dtype=float)
+
+            if d2U_z_by_x.ndim != 3 or d2U_z_by_x.shape != (n_x, n_params, n_params):
+                raise ValueError(
+                    "batch['d2U_z_by_x'] must have shape "
+                    f"(n_x, n_params, n_params)=({n_x}, {n_params}, {n_params}), "
+                    f"got {d2U_z_by_x.shape}"
+                )
+            if d2U_xz.ndim != 2 or d2U_xz.shape != (n_params, n_params):
+                raise ValueError(
+                    f"batch['d2U_xz'] must have shape ({n_params}, {n_params}), got {d2U_xz.shape}"
+                )
+            if dUdLdUdL_xz.ndim != 2 or dUdLdUdL_xz.shape != (n_params, n_params):
+                raise ValueError(
+                    "batch['dUdLdUdL_xz'] must have shape "
+                    f"({n_params}, {n_params}), got {dUdLdUdL_xz.shape}"
+                )
+            if cov_z_by_x.ndim != 3 or cov_z_by_x.shape != (n_x, n_params, n_params):
+                raise ValueError(
+                    "batch['cov_z_by_x'] must have shape "
+                    f"(n_x, n_params, n_params)=({n_x}, {n_params}, {n_params}), "
+                    f"got {cov_z_by_x.shape}"
+                )
+
+            d2U_pos = np.tensordot(w_x, d2U_z_by_x, axes=(0, 0))
+            d2U_neg = d2U_xz
+            cov_neg = dUdLdUdL_xz - np.outer(dUdL_neg, dUdL_neg)
+            cov_pos_cond = np.tensordot(w_x, cov_z_by_x, axes=(0, 0))
+
+            hessian = self.beta * (
+                d2U_pos - d2U_neg + self.beta * (cov_neg - cov_pos_cond)
+            )
+
+        if apply_update:
+            if need_hessian:
+                update = self.optimizer.step(grad, hessian=hessian)
+            else:
+                update = self.optimizer.step(grad)
+            self.clamp_and_update()
+        else:
+            update = np.zeros_like(grad)
+
+        if self.logger is not None:
+            mask_ratio = float(np.mean(self.optimizer.mask.astype(float)))
+            self.logger.add_scalar("CDREM/mask_ratio", mask_ratio, step_index)
+            self.logger.add_scalar("CDREM/lr", float(getattr(self.optimizer, "lr", np.nan)), step_index)
+            self.logger.add_scalar("CDREM/grad_norm", float(np.linalg.norm(grad)), step_index)
+            self.logger.add_scalar("CDREM/update_norm", float(np.linalg.norm(update)), step_index)
+            self.logger.add_scalar("CDREM/n_x", float(n_x), step_index)
+
+        out: CDREMOut = {
+            "name": "CDREM",
+            "grad": grad,
+            "hessian": hessian,
+            "update": update,
+            "dUdL_pos": dUdL_pos,
+            "dUdL_neg": dUdL_neg,
+            "meta": {
+                "step_index": step_index,
+                "n_x": int(n_x),
+                "grad_norm": float(np.linalg.norm(grad)),
+                "update_norm": float(np.linalg.norm(update)),
+                "used_hessian": bool(need_hessian),
+            },
+        }
+        if d2U_pos is not None:
+            out["d2U_pos"] = d2U_pos
+        if d2U_neg is not None:
+            out["d2U_neg"] = d2U_neg
+        if cov_neg is not None:
+            out["cov_neg"] = cov_neg
+        if cov_pos_cond is not None:
+            out["cov_pos_cond"] = cov_pos_cond
+        return out
 
 
 class MultiTrainerAnalytic(BaseTrainer):
@@ -569,7 +1357,7 @@ class MultiTrainerAnalytic(BaseTrainer):
 
     # ---- Public schema objects (for documentation / validation) ----
     STEP_SCHEMA: Dict[str, Any] = {
-        "batches": "required Sequence[dict]; length == len(trainers); batches[i] must satisfy trainers[i].BATCH_SCHEMA. Per-trainer parallel dUdL options (parallel_dUdL, dUdL_n_parts, dUdL_n_workers) live inside each batch and are passed through unchanged.",
+        "batches": "required Sequence[dict]; length == len(trainers); batches[i] must satisfy trainers[i].BATCH_SCHEMA. Each sub-batch may optionally include {parallel_dUdL, dUdL_n_parts, dUdL_n_workers} to enable frame-parallel dUdL inside REM/MSE trainers. For REM sub-batches, AA-side inputs may be supplied either as AA['dist'] with recompute_dUdL_AA=True, or as precomputed dUdL_AA (and d2U_AA when Hessian is required) with recompute_dUdL_AA=False. CDREM sub-batches accept dUdL_z_by_x, dUdL_xz, and optional x_weight.",
         "return_keys_list": "optional Sequence[Sequence[str]]; if provided, filters keys in out['sub'][i]",
     }
 
@@ -623,38 +1411,21 @@ class MultiTrainerAnalytic(BaseTrainer):
     def make_batches(
         *batches: Dict[str, Any],
         parallel_dUdL: Optional[bool] = None,
-        dUdL_n_parts: int = 8,
+        dUdL_n_parts: Optional[int] = None,
         dUdL_n_workers: Optional[int] = None,
+        recompute_dUdL_AA: Optional[bool] = None,
         override: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Convenience helper to build the `batches` list for MultiTrainerAnalytic.step().
+        """
+        Convenience helper to build the `batches` list for MultiTrainerAnalytic.step().
 
-        This is primarily for ergonomics, so call sites read naturally and keep
+        This exists purely for ergonomics, so call sites read naturally and keep
         multi-objective wiring explicit.
 
-        In addition, this helper can *optionally* inject per-trainer frame-parallel
-        dUdL settings (used by REMTrainerAnalytic / MSETrainerAnalytic):
-
-        - ``parallel_dUdL`` (bool): enable multiprocessing inside each trainer when
-            the corresponding ``dist`` is dict-like (Pair2DistanceByFrame).
-        - ``dUdL_n_parts`` (int): number of frame chunks.
-        - ``dUdL_n_workers`` (int|None): worker process count.
-
-        By default (``parallel_dUdL=None``), this function does not modify batches.
-
-        Parameters
-        ----------
-        *batches
-            Batch dicts produced by individual trainers' ``make_batch`` helpers.
-        parallel_dUdL
-            If not None, inject ``parallel_dUdL`` into each batch.
-        dUdL_n_parts
-            Injected as ``dUdL_n_parts`` when ``parallel_dUdL`` is not None.
-        dUdL_n_workers
-            Injected as ``dUdL_n_workers`` when provided and ``parallel_dUdL`` is not None.
-        override
-            If False (default), do not overwrite keys that already exist in a batch.
-            If True, overwrite existing parallel dUdL keys.
+        In addition, this helper can **inject common batch settings**
+        into each sub-batch (REM/MSE), so you do not have to set these keys
+        repeatedly at call sites. This includes frame-parallel dUdL settings
+        and, for REM batches, the AA-side recomputation flag.
 
         Examples
         --------
@@ -664,24 +1435,82 @@ class MultiTrainerAnalytic(BaseTrainer):
         ...     rem_batch, mse_batch,
         ...     parallel_dUdL=True, dUdL_n_parts=16, dUdL_n_workers=16
         ... )
+        >>> cached_rem_batch = REMTrainerAnalytic.make_batch(
+        ...     CG_dist=CG_dist,
+        ...     dUdL_AA=dUdL_AA_cached,
+        ...     d2U_AA=d2U_AA_cached,
+        ...     recompute_dUdL_AA=False,
+        ... )
+        >>> batches = MultiTrainerAnalytic.make_batches(
+        ...     cached_rem_batch, mse_batch,
+        ...     recompute_dUdL_AA=False
+        ... )
+
+        Parameters
+        ----------
+        *batches
+            Per-trainer batch dicts. Ordering must match `self.trainers`.
+        parallel_dUdL
+            If not None, set `batch["parallel_dUdL"] = parallel_dUdL` for each
+            sub-batch (unless `override=False` and the key already exists).
+        dUdL_n_parts
+            If not None, set `batch["dUdL_n_parts"] = dUdL_n_parts` for each sub-batch
+            (unless `override=False` and the key already exists).
+        dUdL_n_workers
+            If not None, set `batch["dUdL_n_workers"] = dUdL_n_workers` for each sub-batch
+            (unless `override=False` and the key already exists).
+        recompute_dUdL_AA
+            If not None, set `batch["recompute_dUdL_AA"] = recompute_dUdL_AA` for
+            each sub-batch (unless `override=False` and the key already exists).
+            This is mainly useful for REM batches. Non-REM trainers will simply
+            ignore the extra key.
+        override
+            If True, overwrite existing keys in sub-batches. If False (default),
+            preserve any per-batch custom settings already present.
 
         Returns
         -------
         list_of_batches : list[dict]
-            The same objects passed in, collected into a list (potentially with
-            injected parallel dUdL keys).
+            The same objects passed in, collected into a list (mutated in-place
+            if injection settings are provided).
+
+        Notes
+        -----
+        - Frame-parallel dUdL is implemented inside REM/MSE trainers via
+          `dUdL_parallel(...)` and only activates when the corresponding `dist`
+          is dict-like (Pair2DistanceByFrame).
+        - For REM batches, `recompute_dUdL_AA=False` means the AA-side
+          `<dU/dλ>_AA` is expected to be present directly in the batch, and
+          `d2U_AA` must also be present if the optimizer later requests a Hessian.
+        - MultiTrainerAnalytic itself does NOT compute dUdL; it only forwards
+          batches to sub-trainers (or injects these optional keys here).
         """
         out: List[Dict[str, Any]] = list(batches)
 
-        # Optionally inject parallel dUdL keys into each batch (shallow update only).
-        if parallel_dUdL is not None:
-            for b in out:
-                if override or ("parallel_dUdL" not in b):
-                    b["parallel_dUdL"] = bool(parallel_dUdL)
-                if override or ("dUdL_n_parts" not in b):
-                    b["dUdL_n_parts"] = int(dUdL_n_parts)
-                if dUdL_n_workers is not None and (override or ("dUdL_n_workers" not in b)):
-                    b["dUdL_n_workers"] = int(dUdL_n_workers)
+        # No-op fast path: keep original behavior when user does not request injection.
+        if (
+            (parallel_dUdL is None)
+            and (dUdL_n_parts is None)
+            and (dUdL_n_workers is None)
+            and (recompute_dUdL_AA is None)
+        ):
+            return out
+
+        for b in out:
+            if not isinstance(b, dict):
+                continue
+
+            if parallel_dUdL is not None and (override or ("parallel_dUdL" not in b)):
+                b["parallel_dUdL"] = bool(parallel_dUdL)
+
+            if dUdL_n_parts is not None and (override or ("dUdL_n_parts" not in b)):
+                b["dUdL_n_parts"] = int(dUdL_n_parts)
+
+            if dUdL_n_workers is not None and (override or ("dUdL_n_workers" not in b)):
+                b["dUdL_n_workers"] = int(dUdL_n_workers)
+
+            if recompute_dUdL_AA is not None and (override or ("recompute_dUdL_AA" not in b)):
+                b["recompute_dUdL_AA"] = bool(recompute_dUdL_AA)
 
         return out
 
@@ -719,25 +1548,18 @@ class MultiTrainerAnalytic(BaseTrainer):
         ----------
         batches : Sequence[Dict[str, Any]]
             A sequence of batch dictionaries, one per sub-trainer. Each batch must
-            contain all keys required by the corresponding trainer's ``step`` method
-            (e.g. distance data, weights, beta, masks, etc.). The ordering of
-            ``batches`` must match the ordering of ``self.trainers``.
+            contain all keys required by the corresponding trainer's ``step`` method.
+            The ordering of ``batches`` must match the ordering of ``self.trainers``.
 
-Notes on frame-parallel dUdL
-----------------------------
-Some sub-trainers (e.g. REMTrainerAnalytic / MSETrainerAnalytic) support
-multiprocessing inside ``trainer.step`` to accelerate dUdL evaluation on
-dict-like ``dist`` (Pair2DistanceByFrame). These options are carried in
-the batch dict itself:
+            In particular, REM sub-batches now support two AA-side input modes:
 
-  - ``parallel_dUdL`` (bool)
-  - ``dUdL_n_parts`` (int)
-  - ``dUdL_n_workers`` (int|None)
+            - recompute mode:
+              ``{"AA": {"dist": ...}, "CG": {"dist": ...}, "recompute_dUdL_AA": True}``
+            - cached-AA mode:
+              ``{"dUdL_AA": ..., "CG": {"dist": ...}, "recompute_dUdL_AA": False}``
 
-``MultiTrainerAnalytic`` does not interpret these keys; it simply passes
-each batch to its corresponding trainer. Use ``make_batches(..., parallel_dUdL=...)``
-to inject these keys uniformly if desired.
-
+            If the active optimizer accepts a Hessian, cached-AA REM batches must
+            also include ``d2U_AA``.
 
         return_keys_list : Optional[Sequence[Sequence[str]]], optional
             If provided, specifies which keys from each sub-trainer's output
@@ -785,6 +1607,7 @@ to inject these keys uniformly if desired.
 
         Notes
         -----
+        - Sub-trainers may internally use multiprocessing for frame-parallel dUdL evaluation (keys: parallel_dUdL / dUdL_n_parts / dUdL_n_workers). This is independent of `parallel_grad`, which parallelizes across trainers via threads.
         - Parallel execution is implemented using threads rather than processes in
         order to avoid copying large batch data (e.g. distance arrays) between
         processes and to preserve trainer and potential state in the main thread.

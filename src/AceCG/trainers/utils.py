@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple, List
+from typing import Any, Dict, Optional, Sequence, Tuple, List, Union
+from pathlib import Path
 import os
 
 import numpy as np
@@ -60,55 +61,8 @@ def _worker_pair2dist(
     )
 
 
-def prepare_Trainer_data(u, pair2potential, start, end, cutoff, sel="all", nstlist=10, exclude=True, weight=None):
-    """
-    Extracts pairwise distances from trajectory into Trainer-compatible format.
-
-    Parameters
-    ----------
-    u : MDAnalysis.Universe
-        Input simulation trajectory.
-    pair2potential : dict
-        Mapping of (type1, type2) to BasePotential objects.
-    start : int
-        Starting frame index (inclusive).
-    end : int
-        Ending frame index (exclusive).
-    cutoff : float
-        Global neighbor cutoff.
-    sel : str, optional
-        Atom selection string. Default is 'all'.
-    nstlist : int, optional
-        Neighbor list update interval.
-    exclude : bool, optional
-        Whether to exclude bonded neighbors. Default is True.
-    weight : np.ndarray, optional
-        Assign weight for each frame to obtain a reweighted ensemble
-        Length-n_frames weight array. If None, uniform average is used.
-
-    Returns
-    -------
-    data : dict
-        Dictionary with keys:
-        - 'dist': frame-indexed pairwise distance dictionary
-        - 'weight': None (uniform weighting)
-    """
-    dist = Pair2DistanceByFrame(
-        u, start=start, end=end, cutoff=cutoff,
-        pair2potential=pair2potential, sel=sel,
-        nstlist=nstlist, exclude=exclude
-    )
-
-    return {"dist": dist, "weight": weight}
-
-
-def prepare_Trainer_data_parallel(
-    *,
-    # Either provide an already-loaded Universe OR provide topology+trajectory
-    u: Optional[mda.Universe] = None,
-    topology: Optional[str | Path] = None,
-    trajectory: Optional[str | Path] = None,
-    # Same parameters as prepare_Trainer_data
+def prepare_Trainer_data(
+    u,
     pair2potential: Dict[Tuple[str, str], Any],
     start: int,
     end: int,
@@ -117,90 +71,152 @@ def prepare_Trainer_data_parallel(
     nstlist: int = 10,
     exclude: bool = True,
     weight: Optional[np.ndarray] = None,
-    # Parallel controls
+) -> Dict[str, Any]:
+    """
+    Extract pairwise distances from an MDAnalysis Universe into Trainer format.
+
+    This is the serial version. It directly analyzes the trajectory contained
+    in the provided ``MDAnalysis.Universe``.
+
+    Parameters
+    ----------
+    u : MDAnalysis.Universe
+        Input simulation system.
+    pair2potential : dict
+        Mapping of (type1, type2) to potential objects.
+    start : int
+        Starting frame index (inclusive).
+    end : int
+        Ending frame index (exclusive).
+    cutoff : float
+        Neighbor cutoff.
+    sel : str
+        Atom selection.
+    nstlist : int
+        Neighbor list update interval.
+    exclude : bool
+        Whether to exclude bonded neighbors.
+    weight : np.ndarray, optional
+        Optional per-frame weight array.
+
+    Returns
+    -------
+    dict
+        {
+            "dist": Pair2DistanceByFrame output,
+            "weight": weight
+        }
+    """
+
+    dist = Pair2DistanceByFrame(
+        u,
+        start=start,
+        end=end,
+        cutoff=cutoff,
+        pair2potential=pair2potential,
+        sel=sel,
+        nstlist=nstlist,
+        exclude=exclude,
+    )
+
+    return {"dist": dist, "weight": weight}
+
+
+def prepare_Trainer_data_parallel(
+    *,
+    topology: Optional[Union[str, Path]] = None,
+    trajectory: Union[str, Path],
+    pair2potential: Dict[Tuple[str, str], Any],
+    start: int,
+    end: int,
+    cutoff: float,
+    sel: str = "all",
+    nstlist: int = 10,
+    exclude: bool = True,
+    weight: Optional[np.ndarray] = None,
     n_parts: int = 8,
     n_workers: Optional[int] = None,
-    chunk_dir: str | Path = "traj_chunks",
+    chunk_dir: Union[str, Path] = "traj_chunks",
     chunk_prefix: str = "chunk",
     keep_chunks: bool = True,
 ) -> Dict[str, Any]:
     """
-    Parallel version of prepare_Trainer_data: split trajectory into chunks, compute Pair2DistanceByFrame
-    per chunk in parallel, then combine back into a single continuous-frame dictionary.
+    Parallel version of prepare_Trainer_data.
+
+    This function splits a trajectory file into smaller chunk trajectories,
+    computes Pair2DistanceByFrame for each chunk in parallel, and then
+    combines the results into a single frame-indexed dictionary.
+
+    Unlike the serial version, this function does NOT accept an MDAnalysis
+    Universe. Workers reopen trajectory chunks independently.
 
     Parameters
     ----------
-    u : MDAnalysis.Universe, optional
-        If provided, must contain the trajectory. This is used only to locate the trajectory path is NOT
-        always reliable for MDAnalysis in-memory readers; recommended path-based use below.
-    topology : str | Path, optional
-        Topology file (e.g., LAMMPS data / PDB). If None, we try to load LAMMPSDUMP without topology.
-    trajectory : str | Path, optional
-        Input lammpstrj path. Required unless you pass a Universe *and* can resolve its filename.
-    pair2potential, start, end, cutoff, sel, nstlist, exclude, weight
-        Same meaning as in prepare_Trainer_data.
-        Note: (start, end) apply to the *original* trajectory frame indices.
+    topology : str or Path, optional
+        Topology file used to construct MDAnalysis Universe objects.
+    trajectory : str or Path
+        Input trajectory path.
+    pair2potential : dict
+        Mapping of (type1, type2) to potential objects.
+    start : int
+        Starting frame index.
+    end : int
+        Ending frame index.
+    cutoff : float
+        Neighbor cutoff.
+    sel : str
+        Atom selection.
+    nstlist : int
+        Neighbor list update interval.
+    exclude : bool
+        Whether to exclude bonded neighbors.
+    weight : np.ndarray, optional
+        Frame weights.
     n_parts : int
-        How many chunks to split into (approximately equal frames).
+        Number of trajectory chunks.
     n_workers : int, optional
-        Process count. Default: os.cpu_count().
-    chunk_dir : str | Path
-        Directory to write temporary chunk trajectories.
+        Number of worker processes.
+    chunk_dir : str or Path
+        Directory for temporary chunk trajectories.
     chunk_prefix : str
-        Prefix for chunk files.
+        Prefix for chunk filenames.
     keep_chunks : bool
-        If False, delete chunk files after combining.
+        Whether to keep chunk files.
 
     Returns
     -------
-    data : dict
+    dict
         {
-          "dist": {global_frame: {pair: distances}},
-          "weight": weight_slice_or_none
+            "dist": combined Pair2DistanceByFrame,
+            "weight": weight[start:end] or None
         }
-
-    Important Notes
-    ---------------
-    - Uses multiprocessing (ProcessPoolExecutor) for MDAnalysis safety.
-    - Each chunk is processed with local frame indices starting at 0; we then reindex continuously
-      using combine_Pair2DistanceByFrame.
-    - Neighbor list updates:
-        * If nstlist>0, neighbor list is updated within each chunk independently.
-        * If nstlist==0, neighbor list is computed once per chunk at chunk frame 0.
-      This can create small boundary effects only if you intended a *single* neighborlist state
-      carried across chunks (rarely needed; usually fine).
     """
+
     if n_workers is None:
         n_workers = os.cpu_count() or 1
-
-    # Resolve trajectory path
-    if trajectory is None:
-        if u is None:
-            raise ValueError("Provide `trajectory` path, or provide `u` (Universe).")
-        # Best-effort: MDAnalysis may or may not expose the filename depending on reader
-        try:
-            trajectory = Path(u.trajectory.filename)  # type: ignore[attr-defined]
-        except Exception as e:
-            raise ValueError(
-                "Could not resolve trajectory path from Universe. Please pass `trajectory=...` explicitly."
-            ) from e
 
     trajectory = Path(trajectory)
     if not trajectory.exists():
         raise FileNotFoundError(trajectory)
 
-    topo_str: Optional[str] = str(topology) if topology is not None else None
+    if start < 0:
+        raise ValueError("start must be >= 0")
 
-    # Build weights slice for [start:end)
+    if end <= start:
+        raise ValueError("end must be > start")
+
+    topo_str = str(topology) if topology is not None else None
+
     if weight is not None:
+        weight = np.asarray(weight)
         if len(weight) < end:
-            raise ValueError(f"weight length {len(weight)} < end {end}")
-        weight_out = np.asarray(weight[start:end])
+            raise ValueError("weight shorter than trajectory slice")
+        weight_out = weight[start:end]
     else:
         weight_out = None
 
-    # Split whole trajectory into chunks first, then we will only use frames that overlap [start, end)
     chunk_dir = Path(chunk_dir)
+
     chunk_paths = split_lammpstrj(
         trj_path=trajectory,
         n_parts=n_parts,
@@ -210,30 +226,45 @@ def prepare_Trainer_data_parallel(
         dry_run=False,
     )
 
-    # We need to know which chunk contains which global frame range.
-    # split_lammpstrj splits by frame count evenly; we can reconstruct ranges by counting frames per chunk.
-    # To avoid rescanning the big file, scan each chunk quickly with MDAnalysis length (cheap per chunk).
-    chunk_meta: List[Tuple[int, int, Path]] = []  # (global_start, global_end, path)
+    chunk_meta = []
     gcur = 0
+
     for p in chunk_paths:
-        uu = mda.Universe(str(p), format="LAMMPSDUMP") if topo_str is None else mda.Universe(topo_str, str(p), format="LAMMPSDUMP")
+
+        if topo_str is None:
+            uu = mda.Universe(str(p), format="LAMMPSDUMP")
+        else:
+            uu = mda.Universe(topo_str, str(p), format="LAMMPSDUMP")
+
         nfr = len(uu.trajectory)
+
         chunk_meta.append((gcur, gcur + nfr, p))
+
         gcur += nfr
 
-    # Select chunks that overlap [start, end)
-    use_chunks: List[Tuple[int, int, Path]] = []
+    if start >= gcur:
+        raise ValueError("start beyond trajectory length")
+
+    if end > gcur:
+        raise ValueError("end beyond trajectory length")
+
+    use_chunks = []
+
     for g0, g1, p in chunk_meta:
+
         if g1 <= start or g0 >= end:
             continue
+
         use_chunks.append((g0, g1, p))
 
-    # Run parallel workers on selected chunks (but note: each worker computes ALL frames in that chunk)
-    results_by_chunk_start: Dict[int, Dict[int, Dict[Tuple[str, str], np.ndarray]]] = {}
+    results_by_chunk_start = {}
 
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
+
         futs = {}
+
         for g0, g1, p in use_chunks:
+
             fut = ex.submit(
                 _worker_pair2dist,
                 topo_str,
@@ -244,38 +275,44 @@ def prepare_Trainer_data_parallel(
                 nstlist,
                 exclude,
             )
+
             futs[fut] = (g0, g1, p)
 
         for fut in as_completed(futs):
+
             g0, g1, p = futs[fut]
+
             d_local = fut.result()
+
             results_by_chunk_start[g0] = d_local
 
-    # Now crop each chunk result to only the frames that overlap [start, end),
-    # and then combine in the correct order.
     dicts_to_combine = []
-    global_start_for_combine = start
 
-    # Sort chunks by global start
     for g0, g1, p in sorted(use_chunks, key=lambda x: x[0]):
+
         d_local = results_by_chunk_start[g0]
-        # local frames correspond to global frames [g0, g1) => local i maps to global (g0+i)
+
         lo = max(start, g0) - g0
         hi = min(end, g1) - g0
 
-        # Extract local frames in [lo, hi)
         d_slice = {i: d_local[i] for i in range(lo, hi)}
+
         dicts_to_combine.append(d_slice)
 
-    dist = combine_Pair2DistanceByFrame(dicts_to_combine, start_frame=global_start_for_combine)
+    dist = combine_Pair2DistanceByFrame(
+        dicts_to_combine,
+        start_frame=start,
+    )
 
-    # Optionally cleanup chunk files
     if not keep_chunks:
+
         for _, _, p in chunk_meta:
+
             try:
                 p.unlink()
             except Exception:
                 pass
+
         try:
             chunk_dir.rmdir()
         except Exception:

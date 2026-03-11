@@ -439,3 +439,172 @@ def split_lammpstrj_mdanalysis(
                 frame_idx += 1
 
     return out_paths
+
+
+# ===========================
+# Trajectory processing
+# ===========================
+def _is_probably_fractional(pos):
+    """Heuristic: positions look like fractional/scaled coords (mostly within ~[0,1])."""
+    pmin = np.nanmin(pos)
+    pmax = np.nanmax(pos)
+    return (pmin > -0.5) and (pmax < 1.5)
+
+
+def _unwrap_selection_fractional(frac_sel):
+    """
+    Make a selection whole in fractional coordinates using minimum-image relative to a reference.
+    No topology needed.
+
+    Parameters
+    ----------
+    frac_sel : (N,3) array
+        fractional coords (can be outside [0,1))
+
+    Returns
+    -------
+    frac_unwrapped : (N,3) array
+        unwrapped fractional coords, continuous around reference
+    """
+    ref = frac_sel[0].copy()
+    d = frac_sel - ref
+    d -= np.round(d)          # minimum image in fractional space
+    return ref + d
+
+
+def _center_of_mass_or_geometry(frac_unwrapped, masses, box):
+    """
+    Compute COM if masses are valid; else COG. Return in real coordinates.
+    """
+    real = frac_unwrapped * box  # (N,3)
+    masses = np.asarray(masses, dtype=float)
+    if np.all(np.isfinite(masses)) and np.all(masses > 0):
+        w = masses / masses.sum()
+        return np.sum(real * w[:, None], axis=0)
+    else:
+        return np.mean(real, axis=0)
+
+
+def _write_lammpstrj(
+    fh, timestep, box, ids, types, coords, coord_style="xs"
+):
+    """
+    Write a single LAMMPS dump frame.
+    coord_style: "xs" (coords in [0,1)) or "x" (real coords)
+    """
+    Lx, Ly, Lz = box
+    fh.write("ITEM: TIMESTEP\n")
+    fh.write(f"{timestep}\n")
+    fh.write("ITEM: NUMBER OF ATOMS\n")
+    fh.write(f"{len(ids)}\n")
+    fh.write("ITEM: BOX BOUNDS pp pp pp\n")
+    fh.write(f"0.0 {Lx:.16e}\n")
+    fh.write(f"0.0 {Ly:.16e}\n")
+    fh.write(f"0.0 {Lz:.16e}\n")
+
+    if coord_style == "xs":
+        fh.write("ITEM: ATOMS id type xs ys zs\n")
+    elif coord_style == "x":
+        fh.write("ITEM: ATOMS id type x y z\n")
+    else:
+        raise ValueError("coord_style must be 'xs' or 'x'")
+
+    for i in range(len(ids)):
+        fh.write(
+            f"{int(ids[i])} {int(types[i])} "
+            f"{coords[i,0]:.10f} {coords[i,1]:.10f} {coords[i,2]:.10f}\n"
+        )
+
+
+def recenter_lammpstrj_selection(
+    dump_in: str,
+    dump_out: str,
+    topology: str,
+    selection: str,
+    output_style: str = "xs",   # "xs" or "x"
+):
+    """
+    Recenter a selected group to the box center for each frame.
+    Robust to PBC splitting WITHOUT needing bonds/mol-id (orthorhombic only).
+
+    Parameters
+    ----------
+    dump_in : str
+        input lammpstrj (can have xs/ys/zs or x/y/z; MDAnalysis reads it)
+    dump_out : str
+        output lammpstrj
+    topology : str
+        any topology MDAnalysis can read for ids/types/masses (LAMMPS data is ok)
+    selection : str
+        MDAnalysis selection string for the group you want to center
+    output_style : str
+        "xs" -> write scaled coords xs ys zs
+        "x"  -> write real coords x y z
+    """
+    u = mda.Universe(topology, dump_in, format="LAMMPSDUMP")
+    all_atoms = u.atoms
+    sel = u.select_atoms(selection)
+
+    # cache ids/types (should not change by frame)
+    ids = all_atoms.ids
+    # MDAnalysis sometimes stores types as strings; cast later
+    try:
+        types = all_atoms.types.astype(int)
+    except Exception:
+        types = np.array([int(t) for t in all_atoms.types])
+
+    with open(dump_out, "w", encoding="utf-8") as fh:
+        for ts in u.trajectory:
+            box = ts.dimensions[:3].astype(float)
+            box_center = box / 2.0
+
+            pos = all_atoms.positions.copy()
+
+            # Detect whether positions are fractional-ish or real-ish
+            pos_is_frac = _is_probably_fractional(pos)
+
+            if pos_is_frac:
+                frac_all = pos
+            else:
+                frac_all = pos / box  # convert real -> fractional
+
+            # Wrap fractional into [0,1) for stability
+            frac_all = frac_all - np.floor(frac_all)
+
+            # Selection fractional coords
+            frac_sel = frac_all[sel.ix]
+
+            # Unwrap selection in fractional space (no topology needed)
+            frac_sel_unwrapped = _unwrap_selection_fractional(frac_sel)
+
+            # COM/COG in real coords
+            com_real = _center_of_mass_or_geometry(frac_sel_unwrapped, sel.masses, box)
+
+            # Compute shift in real and convert to fractional shift
+            shift_real = box_center - com_real
+            shift_frac = shift_real / box
+
+            # Apply to all atoms in fractional space and wrap back
+            frac_all = frac_all + shift_frac
+            frac_all = frac_all - np.floor(frac_all)  # wrap to [0,1)
+
+            # Output coords
+            if output_style == "xs":
+                out_coords = frac_all
+            elif output_style == "x":
+                out_coords = frac_all * box
+            else:
+                raise ValueError("output_style must be 'xs' or 'x'")
+
+            # Use LAMMPS timestep if available; fallback to frame index
+            timestep = getattr(ts, "data", {}).get("step", None)
+            if timestep is None:
+                timestep = ts.frame
+
+            _write_lammpstrj(
+                fh, timestep=timestep, box=box,
+                ids=ids, types=types, coords=out_coords,
+                coord_style=output_style
+            )
+
+    print(f"Done. Wrote centered trajectory: {dump_out}")

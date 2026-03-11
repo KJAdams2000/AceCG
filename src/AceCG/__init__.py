@@ -5,11 +5,11 @@ AceCG: A Python package for bottom-up coarse-graining.
 # Core CG FF trainers
 from .trainers.analytic import REMTrainerAnalytic
 from .trainers.analytic import MSETrainerAnalytic
+from .trainers.analytic import CDREMTrainerAnalytic
 from .trainers.analytic import MultiTrainerAnalytic
 from .trainers.utils import prepare_Trainer_data, prepare_Trainer_data_parallel
 
 # Optimizers
-from .optimizers.base import BaseOptimizer
 from .optimizers.newton_raphson import NewtonRaphsonOptimizer
 from .optimizers.adam import AdamMaskedOptimizer
 from .optimizers.adamW import AdamWMaskedOptimizer
@@ -25,11 +25,13 @@ from .potentials.lennardjones96 import LennardJones96Potential
 from .potentials.lennardjones_soft import LennardJonesSoftPotential
 from .potentials.srlrgaussian import SRLRGaussianPotential
 from .potentials.unnormalized_multi_gaussian import UnnormalizedMultiGaussianPotential
-from .potentials.base import BasePotential
+
+# Solvers
+from .solvers import FMMatrixSolver
 
 # Utilities
 from .utils.compute import dUdLByFrame, dUdL, dUdL_parallel, d2UdLjdLk_Matrix, dUdLj_dUdLk_Matrix, Hessian, KL_divergence, dUdLByBin, compute_weighted_rdf, compute_weighted_pair_distance_pdfs
-from .utils.neighbor import Pair2DistanceByFrame, combine_Pair2DistanceByFrame
+from .utils.neighbor import GetBondedInfo, Pair2DistanceByFrame, combine_Pair2DistanceByFrame
 from .utils.ffio import FFParamArray, FFParamIndexMap, ReadLmpFF, WriteLmpTable, WriteLmpFF, ParseLmpTable
 from .utils.mask import BuildGlobalMask, DescribeMask
 from .utils.bounds import BuildGlobalBounds, DescribeBounds
@@ -43,10 +45,10 @@ from .fitters.fit_multi_gaussian import MultiGaussianConfig, MultiGaussianTableF
 __all__ = [
     "REMTrainerAnalytic",
 	"MSETrainerAnalytic",
+	"CDREMTrainerAnalytic",
     "MultiTrainerAnalytic",
     "prepare_Trainer_data",
     "prepare_Trainer_data_parallel",
-    "BaseOptimizer",
     "NewtonRaphsonOptimizer",
 	"AdamMaskedOptimizer",
 	"AdamWMaskedOptimizer",
@@ -60,7 +62,7 @@ __all__ = [
     "LennardJonesSoftPotential",
     "SRLRGaussianPotential",
     "UnnormalizedMultiGaussianPotential",
-    "BasePotential",
+	"FMMatrixSolver",
     "dUdLByFrame",
     "dUdL",
 	"dUdL_parallel",
@@ -72,6 +74,7 @@ __all__ = [
 	"dUdLByBin",
     "compute_weighted_rdf",
 	"compute_weighted_pair_distance_pdfs",
+	"GetBondedInfo",
     "Pair2DistanceByFrame",
     "combine_Pair2DistanceByFrame",
     "FFParamArray",
