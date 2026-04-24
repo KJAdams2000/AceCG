@@ -1,12 +1,23 @@
 # AceCG
-A flexible Python package for bottom-up coarse-graining, combining statistical mechanics and optimization methods for analytic and machine-learned potentials.
 
-## Developer Team
+AceCG is a coarse-graining force-field training engine for workflows such as
+FM, REM, CDREM, CDFM, and VP growth.
 
-- [@Ace Yang](https://github.com/AceVolca)
-- [@Thomas Qu](https://github.com/FreddyNietzky)
-- [@Weizhi Xue](https://github.com/KJAdams2000)
-- [@Ivan Kuang](https://github.com/Miku-keai)
-- [@Brian Faintich](https://github.com/brianfaintich)
-- [@Curt Waltmann](https://github.com/waltmann1)
-- [@Zhikun Zhou](https://github.com/afakeoutstandingplyer)
+The active package lives in `src/AceCG/`. Config templates live in `configs/`.
+Tracked experiment records and generated outputs live in `experiments/`.
+
+Start with:
+
+- `current.md` for the live repo state
+- `docs/architecture.md` for code and folder boundaries
+- `docs/workflow.md` for the config-to-experiment flow
+- `docs/hpc.md` for Midway3 cluster rules
+
+Typical lightweight check from the repo root:
+
+```bash
+PYTHONPATH=src python -m pytest tests -q
+```
+
+Use a compute node for MPI, LAMMPS, production runs, and long test suites.
+

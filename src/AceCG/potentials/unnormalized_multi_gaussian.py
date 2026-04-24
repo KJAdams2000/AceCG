@@ -134,6 +134,9 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
         # enforce a small positive floor for stability
         np.maximum(self._params[2::3], self._sigma_floor, out=self._params[2::3])
 
+    def is_param_linear(self) -> np.ndarray:
+        return np.tile(np.array([True, False, False], dtype=bool), self.n_gauss)
+
     # -------- core helpers --------
     def _xr_phi(self, r: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Return x and phi for vectorized evaluation.
@@ -164,10 +167,6 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
         if np.isfinite(self.cutoff):
             out = np.where(np.asarray(r, dtype=float) <= self.cutoff, out, 0.0)
         return out
-
-    # Optional alias: some code may call .energy()
-    def energy(self, r: np.ndarray) -> np.ndarray:
-        return self.value(r)
 
     # -------- zeros for cross-terms --------
     def zero(self, r: np.ndarray) -> np.ndarray:
@@ -280,7 +279,3 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
                 return dsigma_2
 
         raise AttributeError(f"{self.__class__.__name__} has no attribute '{name}'")
-
-
-# Backwards-compatible alias (mirrors the naming pattern used elsewhere)
-UnnormalizedMultiGaussian = UnnormalizedMultiGaussianPotential

@@ -28,6 +28,7 @@ class LennardJonesSoftPotential(BasePotential):
         n: int,
         alpha_LJ: float,
     ) -> None:
+        super().__init__()
         """
         Initialize the soft-core Lennard-Jones potential.
 
@@ -58,6 +59,9 @@ class LennardJonesSoftPotential(BasePotential):
         # Fixed soft-core settings
         self.alpha_LJ = alpha_LJ
         self.n = n
+
+    def is_param_linear(self) -> np.ndarray:
+        return np.array([True, False, False], dtype=bool)
 
     # ------------------------------------------------------------------
     # Core value and force

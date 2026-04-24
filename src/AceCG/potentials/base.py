@@ -1,8 +1,30 @@
 # AceCG/potentials/base.py
 from abc import ABC, abstractmethod
-from typing import List
-import numpy as np
+from typing import Dict, Generator, List, Tuple
 import copy as cp
+import numpy as np
+
+
+def IteratePotentials(
+    forcefield: Dict,
+) -> Generator[Tuple[object, "BasePotential"], None, None]:
+    """Yield ``(key, potential)`` pairs from a forcefield dict.
+
+    Handles both old-style ``Dict[K, BasePotential]`` and
+    new-style ``Dict[K, List[BasePotential]]`` containers.
+    This is a generator — no intermediate list is allocated.
+    
+    Note that when one only needs to iterate over the pair types (only the keys),
+    one can still use the simple `for key, val in forcefield.items()` to iterate over the keys
+    without invoking this generator.
+    """
+    for key, val in forcefield.items():
+        if isinstance(val, list):
+            for pot in val:
+                yield key, pot
+        else:
+            yield key, val
+
 
 class BasePotential(ABC):
     def __init__(self):
@@ -11,6 +33,8 @@ class BasePotential(ABC):
         self._dparam_names = None
         self._d2param_names = None
         self._params_to_scale = None
+        self._df_dparam_names = None
+        self._d2param_dr_names = None
 
     @abstractmethod
     def value(self, r: np.ndarray) -> np.ndarray:
@@ -29,7 +53,7 @@ class BasePotential(ABC):
         return self._param_names
     
     def dparam_names(self) -> List[str]:
-        """Return a List of first derivative method names (used in dUdL)."""
+        """Return a List of first derivative method names (used in energy_grad)."""
         assert self._dparam_names is not None
         return self._dparam_names
     
@@ -37,6 +61,19 @@ class BasePotential(ABC):
         """Return a 2D List of second derivative method names (for Hessian)."""
         assert self._d2param_names is not None
         return self._d2param_names
+
+    def df_dparam_names(self) -> List[str]:
+        """Return names for d(force)/d(param) channels used by iterative FM."""
+        names = getattr(self, "_df_dparam_names", None)
+        if names is None:
+            return []
+        return names
+
+    def d2param_dr_names(self) -> List[List[str]]:
+        """Return names for d2(force)/d(param_j)d(param_k) channels."""
+        if self._d2param_dr_names is None:
+            return []
+        return self._d2param_dr_names
     
     def n_params(self) -> int:
         """Number of parameters this potential depends on."""
@@ -54,8 +91,104 @@ class BasePotential(ABC):
         #     assert len(new_params) == len(self._params)
         self._params = new_params.copy()
 
-    def get_scaled_potential(self, z):
+    def basis_values(self, r: np.ndarray) -> np.ndarray:
+        """Return energy-side per-parameter basis values at r.
 
+        This is not the force-side contract. Force callers must go through
+        ``force_grad()`` so each potential class can decide how to optimize the
+        Jacobian assembly.
+        """
+        names = self.dparam_names()
+        if names is None:
+            return np.empty((len(np.asarray(r)), 0), dtype=float)
+        r = np.asarray(r, dtype=float)
+        cols = [np.asarray(getattr(self, name)(r), dtype=float) for name in names]
+        if not cols:
+            return np.empty((r.size, 0), dtype=float)
+        return np.vstack(cols).T
+
+    def basis_derivatives(self, r: np.ndarray) -> np.ndarray:
+        """Return derivative of basis wrt r (finite-difference fallback)."""
+        r = np.asarray(r, dtype=float)
+        eps = 1.0e-6
+        return (self.basis_values(r + eps) - self.basis_values(r - eps)) / (2.0 * eps)
+
+    def energy_grad(self, r: np.ndarray) -> np.ndarray:
+        """Return dU/dtheta evaluated at r with shape (n_samples, n_params)."""
+        return self._stack_named_channels(self.dparam_names(), r)
+
+    def energy_grad_sum(self, r: np.ndarray) -> np.ndarray:
+        """Return the summed energy gradient ``Σ_samples dU/dtheta``.
+
+        Subclasses can override this to avoid materializing a full
+        ``(n_samples, n_params)`` array when the downstream caller only needs
+        the reduced gradient vector.
+        """
+        grad = self.energy_grad(r)
+        summed = grad.sum(axis=0) if hasattr(grad, "sum") else np.sum(grad, axis=0)
+        return np.asarray(summed, dtype=float).reshape(-1)
+
+    def force_grad(self, r: np.ndarray) -> np.ndarray:
+        """Return dF/dtheta evaluated at r.
+
+        Subclasses may return either a dense ``ndarray`` or a sparse matrix
+        object when that materially improves performance.
+        """
+        names = self.df_dparam_names()
+        if names:
+            return self._stack_named_channels(names, r)
+        return self._finite_difference_param_jacobian(self.force, r)
+
+    @abstractmethod
+    def is_param_linear(self) -> np.ndarray:
+        """Return a per-parameter boolean mask for linear optimization channels."""
+        raise NotImplementedError
+
+    def _stack_named_channels(self, names: List[str], r: np.ndarray) -> np.ndarray:
+        r_flat = np.asarray(r, dtype=float).reshape(-1)
+        if not names:
+            return np.empty((r_flat.size, 0), dtype=float)
+        cols = []
+        for name in names:
+            values = np.asarray(getattr(self, name)(r_flat), dtype=float).reshape(-1)
+            if values.shape != (r_flat.size,):
+                raise ValueError(
+                    f"{type(self).__name__}.{name} returned shape {values.shape}, "
+                    f"expected {(r_flat.size,)}"
+                )
+            cols.append(values)
+        return np.column_stack(cols)
+
+    def _finite_difference_param_jacobian(self, fn, r: np.ndarray) -> np.ndarray:
+        r_flat = np.asarray(r, dtype=float).reshape(-1)
+        params0 = self.get_params()
+        scale = np.maximum(1.0, np.abs(params0))
+        jac = np.empty((r_flat.size, params0.size), dtype=float)
+        try:
+            for idx in range(params0.size):
+                step = 1.0e-6 * scale[idx]
+                params_plus = params0.copy()
+                params_minus = params0.copy()
+                params_plus[idx] += step
+                params_minus[idx] -= step
+                self.set_params(params_plus)
+                values_plus = np.asarray(fn(r_flat), dtype=float).reshape(-1)
+                self.set_params(params_minus)
+                values_minus = np.asarray(fn(r_flat), dtype=float).reshape(-1)
+                jac[:, idx] = (values_plus - values_minus) / (2.0 * step)
+        finally:
+            self.set_params(params0)
+        return jac
+
+    def get_scaled_potential(self, z):  # From Ace
+        """Return a deep copy whose scalable params are multiplied by ``z``.
+
+        Potentials that expose ``self._params_to_scale`` (a list of parameter
+        indices) have those entries scaled by ``z`` on the returned copy; this
+        is used by the VP-growth driver to gradually turn on target
+        interactions. Potentials with ``_params_to_scale is None`` return an
+        unchanged deep copy.
+        """
         if self._params_to_scale is None:
             return cp.deepcopy(self)
 

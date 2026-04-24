@@ -1,9 +1,15 @@
 # AceCG/potentials/gaussian.py
+"""Single-Gaussian pair potential centered at ``r0`` with amplitude ``A`` and width ``sigma``."""
 import numpy as np
 from .base import BasePotential
 
 class GaussianPotential(BasePotential):
+    """Single-Gaussian pair potential ``U(r) = A * exp(-(r - r0)^2 / (2 sigma^2))``.
+
+    Parameters ``[A, r0, sigma]`` — only ``A`` is linear.
+    """
     def __init__(self, typ1, typ2, A, r0, sigma, cutoff):
+        super().__init__()
         self.typ1  = typ1
         self.typ2  = typ2
         self.cutoff = cutoff
@@ -16,6 +22,9 @@ class GaussianPotential(BasePotential):
             ["dAdr0", "dr0_2", "dr0dsigma"],
             ["dAdsigma", "dr0dsigma", "dsigma_2"]
         ]
+
+    def is_param_linear(self) -> np.ndarray:
+        return np.array([True, False, False], dtype=bool)
 
     def value(self, r):
         A, r0, sigma = self._params

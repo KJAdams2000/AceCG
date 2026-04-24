@@ -1,0 +1,18 @@
+name: acg
+channels:
+  - defaults
+dependencies:
+  - matplotlib=3.10.6
+  - mdanalysis>=2.4
+  - mpi4py>=3.1
+  - numba=0.61.2
+  - numpy=2.2.6
+  - pip
+  - python=3.13.5
+  - pyyaml=6.0.3
+  - scipy=1.16.1
+  - threadpoolctl=3.6.0
+  - typing_extensions=4.15.0
+  - pytest
+  - ipykernel
+prefix: /beagle3/gavoth/weizhixue/conda/envs/acg

@@ -1,4 +1,4 @@
-# AceCG/fitters/multigauss.py
+# AceCG/fitters/fit_multi_gaussian.py
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 import numpy as np
@@ -6,13 +6,14 @@ from scipy.optimize import least_squares
 
 from .base import BaseTableFitter, TABLE_FITTERS
 from ..potentials.multi_gaussian import MultiGaussianPotential
-from ..utils.ffio import ParseLmpTable
+from ..io.tables import parse_lammps_table
 from .utils import ( # fitting utils
     _init_grid, _pack_params, _unpack_params,
-    _make_cutoff_anchors,
+    make_cutoff_anchors,
     _gaussian_basis, _gaussian_basis_dr, _solve_A_with_anchors
 )
-from ..utils.bounds import BuildGlobalBounds
+from ..topology.forcefield import Forcefield
+from ..topology.types import InteractionKey
 
 
 @dataclass
@@ -50,7 +51,11 @@ class MultiGaussianConfig:
 											"sigma": (smin, smax)}.
 		pair_bounds : dict
 			Pair specific parameter bounds, e.g. {
-                                            ("1", "1"): {"A_*": (amin, amax), "r0": (rmin, rmax), "sigma": (smin, smax)},
+                                            InteractionKey.pair("1", "1"): {
+                                                "A_*": (amin, amax),
+                                                "r0": (rmin, rmax),
+                                                "sigma": (smin, smax),
+                                            },
                                             }.
         clamp_init_to_bounds : bool = True
             Clamp to [lb, ub] if the initial guess is out of bounds
@@ -96,11 +101,11 @@ class MultiGaussianTableFitter(BaseTableFitter):
         # allow dict-like overrides: MultiGaussianTableFitter(n_gauss=12, repulsive_index=None, ...)
         for k, v in overrides.items():
             if not hasattr(self.cfg, k):
-                raise AttributeError(f"Unknown MultiGaussConfig field '{k}'")
+                raise AttributeError(f"Unknown MultiGaussianConfig field '{k}'")
             setattr(self.cfg, k, v)
 
     def profile_name(self) -> str:
-        return "multigauss"
+        return "multigaussian"
 
     def fit(self, table_path: str, typ1: str, typ2: str) -> MultiGaussianPotential:
         """
@@ -121,7 +126,7 @@ class MultiGaussianTableFitter(BaseTableFitter):
 		pot : MultiGaussianPotential
 			The fitted potential object.
 		"""
-        r, V, _ = ParseLmpTable(table_path)
+        r, V, _ = parse_lammps_table(table_path)
         cfg = self.cfg
         n_gauss = int(cfg.n_gauss)
 
@@ -130,7 +135,7 @@ class MultiGaussianTableFitter(BaseTableFitter):
         p0 = _pack_params(A0, r00, s0)
 
         # cutoff anchors
-        anchors_r = _make_cutoff_anchors(r, np.max(r), cfg.n_anchor, cfg.anchor_span) if cfg.anchor_to_cutoff else np.array([], float)
+        anchors_r = make_cutoff_anchors(r, np.max(r), cfg.n_anchor, cfg.anchor_span) if cfg.anchor_to_cutoff else np.array([], float)
 
         # ----- linear A with anchors + repulsive A>=0 (if used) -----
         A_lin, r0_lin, sigma_lin = _unpack_params(p0)
@@ -169,17 +174,17 @@ class MultiGaussianTableFitter(BaseTableFitter):
                 return cfg.weight_data * res_data
             
             # bounds
-            # build temporary pair2potential with just this pair
+            # build temporary forcefield entry for just this pair
             tmp_pair2pot = {
-                (typ1, typ2): MultiGaussianPotential(
+                InteractionKey.pair(typ1, typ2): MultiGaussianPotential(
                     typ1, typ2, n_gauss=n_gauss,
                     cutoff=float(np.max(r)), init_params=p0
                 )
             }
 
-            # use BuildGlobalBounds to expand pattern bounds to arrays
-            lb, ub = BuildGlobalBounds(
-                tmp_pair2pot,
+            # use Forcefield.build_bounds to expand pattern bounds to arrays
+            tmp_ff = Forcefield(tmp_pair2pot)
+            lb, ub = tmp_ff.build_bounds(
                 global_bounds=cfg.bounds,
                 pair_bounds=cfg.pair_bounds
             )

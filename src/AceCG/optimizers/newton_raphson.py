@@ -76,3 +76,5 @@ class NewtonRaphsonOptimizer(BaseOptimizer):
 
         self.last_update = -self.lr * update
         return self.last_update
+
+    # Newton-Raphson has no running moments; state_dict from base is sufficient.

@@ -30,6 +30,23 @@ class BaseOptimizer(ABC):
         assert L_new.shape == self.L.shape, "Parameter shape mismatch"
         self.L = L_new.copy()
 
+    def state_dict(self) -> dict:
+        """Return serializable optimizer state (parameters + base scalars).
+
+        Subclasses override to include moment buffers, step counters, etc.
+        """
+        return {
+            "L": self.L.tolist(),
+            "mask": self.mask.tolist(),
+            "lr": float(self.lr),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore optimizer state from a dict returned by :meth:`state_dict`."""
+        self.L = np.asarray(state["L"], dtype=self.L.dtype)
+        self.mask = np.asarray(state["mask"], dtype=bool)
+        self.lr = float(state["lr"])
+
     @abstractmethod
     def step(self, grad: np.ndarray, hessian: np.ndarray = None) -> np.ndarray:
         """

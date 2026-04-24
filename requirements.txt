@@ -1,5 +1,6 @@
-Python>=3.8
-numpy
-MDAnalysis>=2.3
-numba>=0.56
-scipy
+MDAnalysis>=2.4
+mpi4py>=3.1
+numpy>=1.23
+PyYAML>=6.0
+scipy>=1.10
+typing_extensions>=4.0; python_version < '3.11'

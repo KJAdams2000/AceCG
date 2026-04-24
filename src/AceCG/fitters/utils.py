@@ -149,7 +149,7 @@ def _solve_A_with_anchors(r, V, r0, sigma, anchors_r, w_data, w_c0, w_c1,
     return res.x
 
 
-def _make_cutoff_anchors(r: np.ndarray, cutoff: float, n_anchor: int, span: float) -> np.ndarray:
+def make_cutoff_anchors(r: np.ndarray, cutoff: float, n_anchor: int, span: float) -> np.ndarray:
     """
     Generate anchor points in [cutoff - span, cutoff] (inclusive).
     If cutoff exceeds data max, use data max instead.

@@ -1,0 +1,76 @@
+# DOPC step1 Force Matching production config.
+#
+# Trainable FM forcefield built from authored B-spline interaction specs.
+# Output is a bundle of .table files under training.output_dir.
+#
+# Atom-type-pair convention: bond and angle specs use atom-type tuples,
+# NOT topology type_id integers.
+#   bond type 1 (HG-MG)  → types: ["1", "2"]
+#   bond type 2 (MG-T1)  → types: ["2", "3"]
+#   bond type 3 (T1-T2)  → types: ["3", "4"]
+#   angle type 1 (HG-MG-T1) → types: ["1", "2", "3"]
+#   angle type 2 (T1-MG-T1) → types: ["3", "2", "3"]
+#   angle type 3 (MG-T1-T2) → types: ["2", "3", "4"]
+
+[system]
+topology_file = ../../data/reference/topo/cg6.data
+pair_style = table
+cutoff = 25.0
+exclude = 100
+
+[training]
+method = fm
+fm_method = iterator
+optimizer = newton
+lr = 1.0
+seed = 20260402
+n_epochs = 1
+convergence_tol = 0.0
+output_dir = ../results/force-matching/dopc_step1
+
+[training.fm_specs]
+pair_specs = [
+  {"types": ["1", "1"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["1", "2"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["1", "3"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["1", "4"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["2", "2"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["2", "3"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["2", "4"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["3", "3"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["3", "4"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0},
+  {"types": ["4", "4"], "n_coeffs": 128, "domain": [1.0, 25.0], "degree": 3, "resolution": 0.1, "max_force": 100.0}
+]
+bond_specs = [
+  {"types": ["1", "2"], "n_coeffs": 128, "domain": [3.25, 7.5], "degree": 3, "resolution": 0.05},
+  {"types": ["2", "3"], "n_coeffs": 128, "domain": [3.5, 10.0], "degree": 3, "resolution": 0.05},
+  {"types": ["3", "4"], "n_coeffs": 128, "domain": [3.25, 10.0], "degree": 3, "resolution": 0.05}
+]
+angle_specs = [
+  {"types": ["1", "2", "3"], "n_coeffs": 128, "domain": [10.0, 180.0], "degree": 3, "resolution": 0.5},
+  {"types": ["3", "2", "3"], "n_coeffs": 128, "domain": [10.0, 180.0], "degree": 3, "resolution": 0.5},
+  {"types": ["2", "3", "4"], "n_coeffs": 128, "domain": [10.0, 180.0], "degree": 3, "resolution": 0.5}
+]
+
+[aa_ref]
+trajectory_files = [
+  "../../data/reference/traj/cg6_1.lammpstrj",
+  "../../data/reference/traj/cg6_2.lammpstrj",
+  "../../data/reference/traj/cg6_3.lammpstrj",
+  "../../data/reference/traj/cg6_4.lammpstrj",
+  "../../data/reference/traj/cg6_5.lammpstrj",
+  "../../data/reference/traj/cg6_6.lammpstrj",
+  "../../data/reference/traj/cg6_7.lammpstrj",
+  "../../data/reference/traj/cg6_8.lammpstrj",
+  "../../data/reference/traj/cg6_9.lammpstrj",
+  "../../data/reference/traj/cg6_10.lammpstrj",
+  "../../data/reference/traj/cg6_11.lammpstrj",
+  "../../data/reference/traj/cg6_12.lammpstrj",
+  "../../data/reference/traj/cg6_13.lammpstrj",
+  "../../data/reference/traj/cg6_14.lammpstrj",
+  "../../data/reference/traj/cg6_15.lammpstrj"
+]
+trajectory_format = LAMMPSDUMP
+skip_frames = 0
+every = 1
+n_frames = 7500

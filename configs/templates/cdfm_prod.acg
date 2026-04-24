@@ -1,0 +1,61 @@
+# DOPC CD-FM production config.
+#
+# zbx-only conditioned sampling + force matching.  Each zbx replica
+# starts from one init config sampled from init_config_pool and is paired
+# with a CG-mapped reference force .npy sampled from init_force_pool
+# (pairing by frame id).  Rank 0 of each zbx task computes the per-frame
+# y_eff = y_ref - f_theta_cg_only(R_init) from the replica's own init
+# config + paired force file, broadcasts it, and the zbx MPI loop then
+# accumulates the CDFM gradient statistics.  No AA reference trajectory
+# is consumed by the training loop.
+#
+# Atom types: 1=VP, 2=HG, 3=MG, 4=T1, 5=T2 (5-type VP-grown topology).
+# VP init pool + latent tables come from the latest VP-growth bundle
+# (1500 grown configs with paired frame_*.forces.npy files).
+# No free-CG xz section — CDFM only needs a simulation engine command so
+# the scheduler can launch zbx replicas.
+
+[system]
+topology_file = ../results/vp_growth/test2_all15_every5_forces_48811873/vp_topology.data
+forcefield_path = ../results/vp_growth/test2_all15_every5_forces_48811873/combined.settings
+forcefield_format = lammps
+pair_style = hybrid/overlay table
+cutoff = 25.0
+exclude = 100
+table_fit = bspline
+table_fit_overrides = {'n_coeffs': 128}
+type_names = cd/system/vcg7_aliases.json
+
+[training]
+method = cdfm
+optimizer = adamw weight_decay=1e-5
+lr = 1.0e-2
+seed = 20260415
+n_epochs = 100
+convergence_tol = 0.0
+temperature = 300.0
+output_dir = ../results/cdfm/dopc_prod_vpgrower_test2_all15_every5_forces
+cdfm_mode = direct
+
+[sampling]
+engine_command = lmp
+perf_trace = true
+sim_var = {"SEED_VEL": "{RANDOM}", "SEED_LANG": "{RANDOM}"}
+
+[conditioning]
+# zbx: K conditioned simulations with real atoms restrained
+input = cd/system/in.zbx.lmp
+init_config_pool = ../results/vp_growth/test2_all15_every5_forces_48811873/frame_*.data
+init_force_pool = ../results/vp_growth/test2_all15_every5_forces_48811873/frame_*.forces.npy
+n_samples = 12
+ncores_per_task = 16
+
+[scheduler]
+# Use the runtime-visible mpirun from the compute-node environment.
+# Backend selection is driven by scheduler.mpirun_path or PATH.
+mpirun_path = /software/intel/oneapi_hpc_2023.1/mpi/2021.9.0/bin/mpirun
+python_exe = python
+task_timeout = 1800
+
+[vp]
+vp_names = ["VP"]

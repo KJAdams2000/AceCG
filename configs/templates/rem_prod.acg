@@ -1,0 +1,63 @@
+# DOPC step2 REM production config with sim_var (seed randomization).
+#
+# Uses B-spline table fitting with n_coeffs=128 override.
+# sim_var injects random SEED_VEL and SEED_LANG into each LAMMPS run.
+#
+# All reference data paths resolve under ./data/reference/.
+
+[system]
+topology_file = rem/system/topology.data
+forcefield_path = rem/system/real.settings
+forcefield_format = lammps
+pair_style = table
+cutoff = 25.0
+exclude = 100
+table_fit = bspline
+table_fit_overrides = {'n_coeffs': 128}
+
+[training]
+method = rem
+optimizer = adamw weight_decay=1e-5
+lr = 1.0e-3
+seed = 20260413
+n_epochs = 300
+convergence_tol = 0.0
+temperature = 300.0
+need_hessian = false
+output_dir = ../results/rem/dopc_step2_simvar
+
+[sampling]
+sim_backend = lammps
+input = rem/system/in.rem.lmp
+engine_command = lmp
+init_config_pool = ../../data/reference/ini_config/system_*.data
+replay_mode = off
+ncores = 48
+sim_var = {"SEED_VEL": "{RANDOM}", "SEED_LANG": "{RANDOM}"}
+
+[scheduler]
+launcher = mpirun
+python_exe = python
+
+[aa_ref]
+trajectory_files = [
+  "../../data/reference/traj/cg6_1.lammpstrj",
+  "../../data/reference/traj/cg6_2.lammpstrj",
+  "../../data/reference/traj/cg6_3.lammpstrj",
+  "../../data/reference/traj/cg6_4.lammpstrj",
+  "../../data/reference/traj/cg6_5.lammpstrj",
+  "../../data/reference/traj/cg6_6.lammpstrj",
+  "../../data/reference/traj/cg6_7.lammpstrj",
+  "../../data/reference/traj/cg6_8.lammpstrj",
+  "../../data/reference/traj/cg6_9.lammpstrj",
+  "../../data/reference/traj/cg6_10.lammpstrj",
+  "../../data/reference/traj/cg6_11.lammpstrj",
+  "../../data/reference/traj/cg6_12.lammpstrj",
+  "../../data/reference/traj/cg6_13.lammpstrj",
+  "../../data/reference/traj/cg6_14.lammpstrj",
+  "../../data/reference/traj/cg6_15.lammpstrj"
+]
+trajectory_format = LAMMPSDUMP
+skip_frames = 0
+every = 1
+n_frames = 7500
