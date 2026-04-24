@@ -9,6 +9,7 @@ class LennardJones96Potential(BasePotential):
     """
 
     def __init__(self, typ1, typ2, epsilon: float, sigma: float, cutoff: float) -> None:
+        super().__init__()
         """
         Initialize the Lennard-Jones 9-6 potential with parameters epsilon and sigma.
         V_LJ (r) = 4ε[(σ/r)^9 - (σ/r)⁶]
@@ -27,6 +28,9 @@ class LennardJones96Potential(BasePotential):
             ["depsilon_2", "depsilondsigma"],
             ["depsilondsigma", "dsigma_2"]
         ]
+
+    def is_param_linear(self) -> np.ndarray:
+        return np.array([True, False], dtype=bool)
 
     def value(self, r: np.ndarray) -> np.ndarray:
         """

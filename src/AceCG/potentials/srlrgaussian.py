@@ -18,6 +18,7 @@ class SRLRGaussianPotential(BasePotential):
     """
 
     def __init__(self, typ1, typ2, A, B, C, D, cutoff):
+        super().__init__()
         self.typ1 = typ1
         self.typ2 = typ2
         self.cutoff = cutoff
@@ -38,6 +39,9 @@ class SRLRGaussianPotential(BasePotential):
             ["dAdC", "dBdC", "dC_2", "dCdD"],
             ["dAdD", "dBdD", "dCdD", "dD_2"],
         ]
+
+    def is_param_linear(self) -> np.ndarray:
+        return np.array([True, False, True, False], dtype=bool)
 
     # ----------------------------------------------------------------------
     # Core potential functions

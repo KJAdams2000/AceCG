@@ -4,17 +4,33 @@ AceCG: A Python package for bottom-up coarse-graining.
 
 # Core CG FF trainers
 from .trainers.analytic import REMTrainerAnalytic
+from .trainers.analytic import load_reweighted_rem_stacks
 from .trainers.analytic import MSETrainerAnalytic
 from .trainers.analytic import CDREMTrainerAnalytic
 from .trainers.analytic import MultiTrainerAnalytic
-from .trainers.utils import prepare_Trainer_data, prepare_Trainer_data_parallel
+from .trainers.analytic import FMTrainerAnalytic
+from .trainers.analytic import CDFMTrainerAnalytic
 
 # Optimizers
+from .optimizers.base import BaseOptimizer
 from .optimizers.newton_raphson import NewtonRaphsonOptimizer
 from .optimizers.adam import AdamMaskedOptimizer
 from .optimizers.adamW import AdamWMaskedOptimizer
 from .optimizers.rmsprop import RMSpropMaskedOptimizer
-from .optimizers.multithreaded.adam import MTAdamOptimizer
+try:
+    from .optimizers.multithreaded.adam import MTAdamOptimizer
+except Exception:  # pragma: no cover - optional dependency (numba) path
+    MTAdamOptimizer = None
+
+# Solvers
+from .solvers.base import BaseSolver
+from .solvers.fm_matrix import FMMatrixSolver
+
+# I/O
+from .io.forcefield import ReadLmpFF, write_lammps_table, WriteLmpFF
+
+# Compute
+from .compute.registry import build_default_engine
 
 # Potentials
 from .potentials.multi_gaussian import MultiGaussianPotential
@@ -25,75 +41,72 @@ from .potentials.lennardjones96 import LennardJones96Potential
 from .potentials.lennardjones_soft import LennardJonesSoftPotential
 from .potentials.srlrgaussian import SRLRGaussianPotential
 from .potentials.unnormalized_multi_gaussian import UnnormalizedMultiGaussianPotential
+from .potentials.base import BasePotential, IteratePotentials
+from .potentials.harmonic import HarmonicPotential
 
-# Solvers
-from .solvers import FMMatrixSolver
+# Topology (new — PR0)
+from .topology import InteractionKey, Forcefield
+from .topology.topology_array import collect_topology_arrays
 
-# Utilities
-from .utils.compute import dUdLByFrame, dUdL, dUdL_parallel, d2UdLjdLk_Matrix, dUdLj_dUdLk_Matrix, Hessian, KL_divergence, dUdLByBin, compute_weighted_rdf, compute_weighted_pair_distance_pdfs
-from .utils.neighbor import GetBondedInfo, Pair2DistanceByFrame, combine_Pair2DistanceByFrame
-from .utils.ffio import FFParamArray, FFParamIndexMap, ReadLmpFF, WriteLmpTable, WriteLmpFF, ParseLmpTable
-from .utils.mask import BuildGlobalMask, DescribeMask
-from .utils.bounds import BuildGlobalBounds, DescribeBounds
-from .utils.trjio import split_lammpstrj, split_lammpstrj_mdanalysis
-from .utils.cgcoords import load_mapping_yaml, build_CG_coords
-
-# Fitters
-from .fitters.fit_bspline import BSplineConfig, BSplineTableFitter
-from .fitters.fit_multi_gaussian import MultiGaussianConfig, MultiGaussianTableFitter
+# Scheduler (v3)
+from .schedulers import (
+    HostInventory, CpuLease, LeasePool, ResourcePool,
+    TaskScheduler, TaskSpec, TaskResult, IterationResult,
+    AllTasksFailedError, resolve_sim_var,
+    preflight_benchmark,
+)
 
 __all__ = [
+    # Trainers
     "REMTrainerAnalytic",
-	"MSETrainerAnalytic",
-	"CDREMTrainerAnalytic",
+    "load_reweighted_rem_stacks",
+    "MSETrainerAnalytic",
+    "CDREMTrainerAnalytic",
     "MultiTrainerAnalytic",
-    "prepare_Trainer_data",
-    "prepare_Trainer_data_parallel",
+    "FMTrainerAnalytic",
+    "CDFMTrainerAnalytic",
+    # Optimizers
+    "BaseOptimizer",
     "NewtonRaphsonOptimizer",
-	"AdamMaskedOptimizer",
-	"AdamWMaskedOptimizer",
-	"RMSpropMaskedOptimizer",
+    "AdamMaskedOptimizer",
+    "AdamWMaskedOptimizer",
+    "RMSpropMaskedOptimizer",
     "MTAdamOptimizer",
-	"MultiGaussianPotential",
+    # Solvers
+    "BaseSolver",
+    "FMMatrixSolver",
+    # I/O
+    "ReadLmpFF",
+    "write_lammps_table",
+    "WriteLmpFF",
+    # Compute
+    "build_default_engine",
+    # Potentials
+    "MultiGaussianPotential",
     "GaussianPotential",
     "BSplinePotential",
-	"LennardJonesPotential",
-	"LennardJones96Potential",
+    "LennardJonesPotential",
+    "LennardJones96Potential",
     "LennardJonesSoftPotential",
     "SRLRGaussianPotential",
     "UnnormalizedMultiGaussianPotential",
-	"FMMatrixSolver",
-    "dUdLByFrame",
-    "dUdL",
-	"dUdL_parallel",
-	"d2UdLjdLk_Matrix",
-    "d2UdLjdLk_Matrix",
-    "dUdLj_dUdLk_Matrix",
-    "Hessian",
-	"KL_divergence",
-	"dUdLByBin",
-    "compute_weighted_rdf",
-	"compute_weighted_pair_distance_pdfs",
-	"GetBondedInfo",
-    "Pair2DistanceByFrame",
-    "combine_Pair2DistanceByFrame",
-    "FFParamArray",
-    "FFParamIndexMap",
-    "ReadLmpFF",
-    "WriteLmpTable",
-    "WriteLmpFF",
-	"ParseLmpTable",
-	"BuildGlobalMask",
-	"DescribeMask",
-	"MultiGaussianConfig",
-	"MultiGaussianTableFitter",
-    "BSplineConfig",
-    "BSplineTableFitter",
-	"BuildGlobalBounds",
-	"DescribeBounds",
-    "load_mapping_yaml",
-    "build_CG_coords",
-    "split_lammpstrj",
-    "split_lammpstrj_mdanalysis",
+    "BasePotential",
+    "IteratePotentials",
+    "HarmonicPotential",
+    # Topology
+    "InteractionKey",
+    "Forcefield",
+    "collect_topology_arrays",
+    # Scheduler
+    "HostInventory",
+    "CpuLease",
+    "LeasePool",
+    "ResourcePool",
+    "TaskScheduler",
+    "TaskSpec",
+    "TaskResult",
+    "IterationResult",
+    "AllTasksFailedError",
+    "resolve_sim_var",
+    "preflight_benchmark",
 ]
-

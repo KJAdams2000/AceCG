@@ -104,6 +104,9 @@ class MultiGaussianPotential(BasePotential):
         # enforce a small positive floor for stability
         np.maximum(self._params[2::3], self._sigma_floor, out=self._params[2::3])
 
+    def is_param_linear(self) -> np.ndarray:
+        return np.tile(np.array([True, False, False], dtype=bool), self.n_gauss)
+
     # -------- core API (vectorized) --------
     def _xr_phi(self, r: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -133,6 +136,52 @@ class MultiGaussianPotential(BasePotential):
         if np.isfinite(self.cutoff):
             F = np.where(r <= self.cutoff, F, 0.0)
         return F
+
+    def energy_grad(self, r: np.ndarray) -> np.ndarray:
+        """Return ``dU/dtheta`` for all Gaussian components in one matrix pass."""
+        r_flat = np.asarray(r, dtype=float).reshape(-1)
+        x, phi = self._xr_phi(r_flat)
+        s = self.sigma
+        pref = phi / SQRT2PI
+
+        grad = np.empty((r_flat.size, 3 * self.n_gauss), dtype=float)
+        grad[:, 0::3] = pref / s[None, :]
+        grad[:, 1::3] = self.A[None, :] * x * pref / (s[None, :] ** 3)
+        grad[:, 2::3] = (
+            self.A[None, :]
+            * (x * x - s[None, :] * s[None, :])
+            * pref
+            / (s[None, :] ** 4)
+        )
+        if np.isfinite(self.cutoff):
+            grad[r_flat > self.cutoff, :] = 0.0
+        return grad
+
+    def force_grad(self, r: np.ndarray) -> np.ndarray:
+        """Return ``dF/dtheta`` for all Gaussian components in one matrix pass."""
+        r_flat = np.asarray(r, dtype=float).reshape(-1)
+        x, phi = self._xr_phi(r_flat)
+        s = self.sigma
+        pref = phi / SQRT2PI
+
+        grad = np.empty((r_flat.size, 3 * self.n_gauss), dtype=float)
+        grad[:, 0::3] = x * pref / (s[None, :] ** 3)
+        grad[:, 1::3] = (
+            self.A[None, :]
+            * (x * x - s[None, :] * s[None, :])
+            * pref
+            / (s[None, :] ** 5)
+        )
+        grad[:, 2::3] = (
+            self.A[None, :]
+            * x
+            * (x * x - 3.0 * s[None, :] * s[None, :])
+            * pref
+            / (s[None, :] ** 6)
+        )
+        if np.isfinite(self.cutoff):
+            grad[r_flat > self.cutoff, :] = 0.0
+        return grad
 
     # -------- zeros for cross-terms --------
     def zero(self, r: np.ndarray) -> np.ndarray:

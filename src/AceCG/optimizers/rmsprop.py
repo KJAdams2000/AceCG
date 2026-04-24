@@ -137,3 +137,38 @@ class RMSpropMaskedOptimizer(BaseOptimizer):
 
         self.last_update = -update
         return self.last_update
+
+    def state_dict(self) -> dict:
+        d = super().state_dict()
+        d.update({
+            "alpha": float(self.alpha),
+            "eps": float(self.eps),
+            "weight_decay": float(self.weight_decay),
+            "momentum": float(self.momentum),
+            "centered": bool(self.centered),
+            "noise_sigma": float(self.noise_sigma),
+            "square_avg": self.square_avg.tolist(),
+            "momentum_buffer": (
+                self.momentum_buffer.tolist() if self.momentum_buffer is not None else None
+            ),
+            "grad_avg": self.grad_avg.tolist() if self.grad_avg is not None else None,
+        })
+        return d
+
+    def load_state_dict(self, state: dict) -> None:
+        super().load_state_dict(state)
+        self.alpha = float(state["alpha"])
+        self.eps = float(state["eps"])
+        self.weight_decay = float(state["weight_decay"])
+        self.momentum = float(state["momentum"])
+        self.centered = bool(state["centered"])
+        self.noise_sigma = float(state["noise_sigma"])
+        self.square_avg = np.asarray(state["square_avg"], dtype=self.L.dtype)
+        self.momentum_buffer = (
+            np.asarray(state["momentum_buffer"], dtype=self.L.dtype)
+            if state.get("momentum_buffer") is not None else None
+        )
+        self.grad_avg = (
+            np.asarray(state["grad_avg"], dtype=self.L.dtype)
+            if state.get("grad_avg") is not None else None
+        )

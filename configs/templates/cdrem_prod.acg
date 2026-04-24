@@ -1,0 +1,80 @@
+# DOPC CD-REM production config.
+#
+# Dual-sampling iteration: free CG+VP simulation (xz) + K conditioned
+# restrained simulations (zbx).  Forcefield includes both CG pair/bond/
+# angle tables and VP pair/bond/angle interactions.
+#
+# Atom types: 1=VP, 2=HG, 3=MG, 4=T1, 5=T2 (5-type VCG topology).
+# Config pools from Zhikun's step2_CD-REM_force_based/ini_info.
+
+[system]
+topology_file = cd/system/topology.data
+forcefield_path = cd/system/combined.settings
+forcefield_format = lammps
+pair_style = hybrid/overlay table
+cutoff = 25.0
+exclude = 100
+table_fit = bspline
+table_fit_overrides = {'n_coeffs': 128}
+type_names = cd/system/vcg7_aliases.json
+
+[training]
+method = cdrem
+optimizer = adamw weight_decay=1e-5
+lr = 1.0e-3
+seed = 20260415
+n_epochs = 300
+convergence_tol = 0.0
+temperature = 300.0
+need_hessian = false
+output_dir = ../results/cdrem/dopc_prod
+
+[sampling]
+# xz: free CG+VP simulation (no positional restraints)
+sim_backend = lammps
+input = cd/system/in.xz.lmp
+engine_command = lmp
+init_config_pool = ../../data/reference/ini_config_vp/ini_config/system_*.data
+replay_mode = latest
+ncores = 48
+sim_var = {"SEED_VEL": "{RANDOM}", "SEED_LANG": "{RANDOM}"}
+
+[conditioning]
+# zbx: K conditioned simulations with real atoms restrained
+input = cd/system/in.zbx.lmp
+init_config_pool = ../../data/reference/ini_config_vp/vcg_ini_config/*/subsample_*.data
+n_samples = 15
+ncores_per_task = 16
+
+[scheduler]
+launcher = mpirun
+python_exe = python
+
+[vp]
+vp_names = ["VP"]
+
+[aa_ref]
+ref_topo = ../../data/reference/topo/cg6.data
+ref_type_names = ../../data/reference/topo/cg6_aliases.json
+ref_has_vp = no
+trajectory_files = [
+  "../../data/reference/traj/cg6_1.lammpstrj",
+  "../../data/reference/traj/cg6_2.lammpstrj",
+  "../../data/reference/traj/cg6_3.lammpstrj",
+  "../../data/reference/traj/cg6_4.lammpstrj",
+  "../../data/reference/traj/cg6_5.lammpstrj",
+  "../../data/reference/traj/cg6_6.lammpstrj",
+  "../../data/reference/traj/cg6_7.lammpstrj",
+  "../../data/reference/traj/cg6_8.lammpstrj",
+  "../../data/reference/traj/cg6_9.lammpstrj",
+  "../../data/reference/traj/cg6_10.lammpstrj",
+  "../../data/reference/traj/cg6_11.lammpstrj",
+  "../../data/reference/traj/cg6_12.lammpstrj",
+  "../../data/reference/traj/cg6_13.lammpstrj",
+  "../../data/reference/traj/cg6_14.lammpstrj",
+  "../../data/reference/traj/cg6_15.lammpstrj"
+]
+trajectory_format = LAMMPSDUMP
+skip_frames = 0
+every = 1
+n_frames = 7500

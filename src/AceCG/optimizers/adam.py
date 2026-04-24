@@ -58,3 +58,26 @@ class AdamMaskedOptimizer(BaseOptimizer):
         self.L -= update
         self.last_update = -update
         return self.last_update
+
+    def state_dict(self) -> dict:
+        d = super().state_dict()
+        d.update({
+            "t": int(self.t),
+            "m": self.m.tolist(),
+            "v": self.v.tolist(),
+            "beta1": float(self.beta1),
+            "beta2": float(self.beta2),
+            "eps": float(self.eps),
+            "noise_sigma": float(self.noise_sigma),
+        })
+        return d
+
+    def load_state_dict(self, state: dict) -> None:
+        super().load_state_dict(state)
+        self.t = int(state["t"])
+        self.m = np.asarray(state["m"], dtype=self.L.dtype)
+        self.v = np.asarray(state["v"], dtype=self.L.dtype)
+        self.beta1 = float(state["beta1"])
+        self.beta2 = float(state["beta2"])
+        self.eps = float(state["eps"])
+        self.noise_sigma = float(state["noise_sigma"])

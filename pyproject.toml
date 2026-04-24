@@ -1,35 +1,35 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "AceCG"
-version = "0.0.1"
-description = "Python package for bottom-up coarse-graining"
-readme = "README.md"
-license = { text = "GPL-3.0-or-later" }
-authors = [
-    { name="Chengxi (Ace) Yang", email="ycxace@gmail.com" },
-    { name="Sheng (Thomas) Qu", email="tqu@uchicago.edu" },
-    { name="Weizhi Xue", email="weizhixue@uchicago.edu" },
-]
-requires-python = ">=3.8"
-
+version = "0.26.4.20"
+description = "AceCG: A Comprehensive and Efficient Coarse-Graining Engine"
+requires-python = ">=3.9"
 dependencies = [
-    "numpy>=1.21",
-    "MDAnalysis>=2.3",
-    "numba>=0.56",
+    "MDAnalysis>=2.4",
+    "mpi4py>=3.1",
+    "numpy>=1.23",
+    "PyYAML>=6.0",
+    "scipy>=1.10",
+    "typing_extensions>=4.0; python_version < '3.11'",
 ]
 
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
-    "Operating System :: OS Independent",
+[project.optional-dependencies]
+numba = [
+    "numba>=0.59",
 ]
 
-[project.urls]
-"Homepage" = "https://github.com/AceVolca/AceCG"
-"Bug Tracker" = "https://github.com/AceVolca/AceCG/issues"
+[project.scripts]
+acg-fm = "AceCG.workflows.fm:main"
+acg-rem = "AceCG.workflows.rem:main"
+acg-cdfm = "AceCG.workflows.cdfm:main"
+acg-cdrem = "AceCG.workflows.cdrem:main"
+acg-vpgrower = "AceCG.workflows.vp_growth:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

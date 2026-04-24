@@ -105,3 +105,35 @@ class AdamWMaskedOptimizer(BaseOptimizer):
 
         self.last_update = -update  # what the caller saw as "Adam update" previously
         return self.last_update
+
+    def state_dict(self) -> dict:
+        d = super().state_dict()
+        d.update({
+            "t": int(self.t),
+            "m": self.m.tolist(),
+            "v": self.v.tolist(),
+            "vmax": self.vmax.tolist() if self.vmax is not None else None,
+            "beta1": float(self.beta1),
+            "beta2": float(self.beta2),
+            "eps": float(self.eps),
+            "weight_decay": float(self.weight_decay),
+            "amsgrad": bool(self.amsgrad),
+            "noise_sigma": float(self.noise_sigma),
+        })
+        return d
+
+    def load_state_dict(self, state: dict) -> None:
+        super().load_state_dict(state)
+        self.t = int(state["t"])
+        self.m = np.asarray(state["m"], dtype=self.L.dtype)
+        self.v = np.asarray(state["v"], dtype=self.L.dtype)
+        self.vmax = (
+            np.asarray(state["vmax"], dtype=self.L.dtype)
+            if state.get("vmax") is not None else None
+        )
+        self.beta1 = float(state["beta1"])
+        self.beta2 = float(state["beta2"])
+        self.eps = float(state["eps"])
+        self.weight_decay = float(state["weight_decay"])
+        self.amsgrad = bool(state["amsgrad"])
+        self.noise_sigma = float(state["noise_sigma"])
