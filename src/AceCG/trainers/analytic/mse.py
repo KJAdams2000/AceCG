@@ -35,7 +35,6 @@ class MSEBatch(TypedDict, total=False):
     ------------------------
     energy_grad_frame : np.ndarray, shape (n_frames, n_params)
         Per-frame CG energy gradients.
-    CG : EnsembleBatch  (deprecated — requires pair2distance_frame path)
 
     Optional keys
     -------------
