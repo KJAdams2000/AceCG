@@ -1,202 +1,202 @@
-# 02 Topology 模块开发者参考
+# 02 Topology Module Developer Reference
 
 *Updated: 2026-04-23.*
 
-拓扑层由三个核心文件构成，外加两个辅助模块：
+The topology layer is built around three core files plus two helper modules:
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `types.py` | `InteractionKey` — 所有相互作用类型的规范化哈希键 |
-| `topology_array.py` | `TopologyArrays` — 冻结数据类，从 MDAnalysis Universe 构建一次，广播给 MPI worker |
-| `forcefield.py` | `Forcefield` — `InteractionKey → List[BasePotential]` 字典容器，附带 mask、bounds、参数向量缓存 |
-| `neighbor.py` | 拓扑感知近邻搜索，输出 `{InteractionKey: (a_idx, b_idx)}` |
-| `mscg.py` | MS-CG 拓扑辅助工具（依赖核心三件套）|
+| `types.py` | `InteractionKey`, the canonical hash key for all interaction types |
+| `topology_array.py` | `TopologyArrays`, a frozen dataclass built once from an MDAnalysis Universe and broadcast to MPI workers |
+| `forcefield.py` | `Forcefield`, an `InteractionKey -> List[BasePotential]` dictionary container with masks, bounds, and parameter-vector caches |
+| `neighbor.py` | Topology-aware neighbor search, producing `{InteractionKey: (a_idx, b_idx)}` |
+| `mscg.py` | MS-CG topology helpers built on the core topology objects |
 
 ---
 
-## `InteractionKey`（types.py）
+## `InteractionKey`
 
-`NamedTuple(style, types)`。全局用作字典键。
+`InteractionKey` is a `NamedTuple(style, types)` used globally as a dictionary key.
 
 ```python
 key = InteractionKey.bond("A", "B")
-key = InteractionKey.pair("C", "A")     # 自动排序 → ("A","C")
+key = InteractionKey.pair("C", "A")     # automatically sorted -> ("A", "C")
 key = InteractionKey.angle("X", "Y", "Z")
 key = InteractionKey.dihedral("A", "B", "C", "D")
 ```
 
-### 规范化规则
+### Normalization Rules
 
-所有构造函数产出规范化顺序，使 `key(A,B) == key(B,A)`：
+All constructors return canonical ordering so that symmetric keys compare equal:
 
-| Style | 规则 | 例子 |
+| Style | Rule | Example |
 |---|---|---|
-| pair | 字母序：`(a,b) if a ≤ b` | `pair("C","A")` → `("A","C")` |
-| bond | 同 pair | 同上 |
-| angle | 若 `a > c` 则反转：`(a,b,c) if a ≤ c else (c,b,a)` | `angle("Z","Y","A")` → `("A","Y","Z")` |
-| dihedral | 若 `(a,b) > (d,c)` 则反转 | `dihedral("D","C","B","A")` → `("A","B","C","D")` |
+| pair | Lexicographic order: `(a, b) if a <= b` | `pair("C", "A")` -> `("A", "C")` |
+| bond | Same as pair | Same as above |
+| angle | Reverse if `a > c`: `(a, b, c) if a <= c else (c, b, a)` | `angle("Z", "Y", "A")` -> `("A", "Y", "Z")` |
+| dihedral | Reverse if `(a, b) > (d, c)` | `dihedral("D", "C", "B", "A")` -> `("A", "B", "C", "D")` |
 
-angle 的中心原子是 `b`。dihedral 的中心键是 `b-c`。
+The center atom of an angle is `b`. The center bond of a dihedral is `b-c`.
 
-### 序列化
+### Serialization
 
 ```python
 key.label()                           # "bond:A:B"
-InteractionKey.from_label("bond:A:B") # 对称反序列化
+InteractionKey.from_label("bond:A:B") # symmetric deserialization
 ```
 
 ---
 
-## `TopologyArrays`（topology_array.py）
+## `TopologyArrays`
 
-**冻结数据类**，通过 `collect_topology_arrays()` 从 MDAnalysis Universe 构建一次，
-然后广播给所有 MPI worker。所有访问通过属性，不用字典键。
+`TopologyArrays` is a frozen dataclass. It is built once from an MDAnalysis Universe with `collect_topology_arrays()` and then broadcast to all MPI workers. All access is through attributes, not dictionary keys.
 
-### 构建
+### Construction
 
 ```python
 from AceCG.topology.topology_array import collect_topology_arrays
 
 topo = collect_topology_arrays(
     universe,
-    exclude_bonded="111",            # 3字符 flag：包含 1-2、1-3、1-4 排除
-    exclude_option="resid",          # nonbonded 排除策略：resid / molid / none
-    atom_type_name_aliases={1: "CA", 2: "CB"},  # 可选，LAMMPS type-code → name
-    vp_names=["VP"],                 # 可选，虚位点 type 名称
+    exclude_bonded="111",            # three-character flag: include 1-2, 1-3, 1-4 exclusions
+    exclude_option="resid",          # nonbonded exclusion policy: resid / molid / none
+    atom_type_name_aliases={1: "CA", 2: "CB"},  # optional LAMMPS type-code -> name map
+    vp_names=["VP"],                 # optional virtual-site type names
 )
 ```
 
-### LAMMPS alias 协议
+### LAMMPS Alias Protocol
 
-`collect_topology_arrays()` 允许合成 atom name：
+`collect_topology_arrays()` can synthesize atom names:
 
-- 若 `u.atoms.names` 已存在，直接使用
-- 若 names 不存在且提供了 `atom_type_name_aliases`，将整数 type code 映射为字符串 name 并写回 Universe
-- 若 names 不存在且未提供 alias，复用 `u.atoms.types` 作为 name 写回 Universe
+- if `u.atoms.names` exists, use it directly
+- if names are absent and `atom_type_name_aliases` is provided, map integer type codes to string names and write them back to the Universe
+- if names are absent and no alias is provided, reuse `u.atoms.types` as names and write them back to the Universe
 
-因此 bonded `InteractionKey` 用的名字来源是：LAMMPS 输入用 alias/合成 name；已有 names+types 的拓扑用 `u.atoms.types`。
+Therefore bonded `InteractionKey` names come from aliases or synthesized names for LAMMPS inputs, and from `u.atoms.types` for topologies that already have names and types.
 
-`atom_type_name_aliases` 的 key 必须是整数型。同一 type id 的冲突 alias 会报错。
+`atom_type_name_aliases` keys must be integers. Conflicting aliases for the same type id raise an error.
 
-### 字段参考
+### Field Reference
 
-**原子级**
+Atom-level fields:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `n_atoms` | int | 总原子数（含虚位点）|
-| `names` | `(n_atoms,)` str | per-atom name |
-| `types` | `(n_atoms,)` str | per-atom type name |
-| `atom_type_names` | `(n_unique,)` str | 有序唯一 type name 列表 |
-| `atom_type_codes` | `(n_atoms,)` int32 | 指向 `atom_type_names` 的 1-based 编码 |
-| `masses` | `(n_atoms,)` float64 | 原子质量 |
-| `charges` | `(n_atoms,)` float64 | 原子电荷 |
-| `atom_resindex` | `(n_atoms,)` int64 | 每个原子所在 residue index |
-| `molnums` | `(n_atoms,)` int64 | 每个原子的分子编号（absent 时填 0）|
+| `n_atoms` | int | Total atom count, including virtual sites |
+| `names` | `(n_atoms,)` str | Per-atom name |
+| `types` | `(n_atoms,)` str | Per-atom type name |
+| `atom_type_names` | `(n_unique,)` str | Ordered unique type-name list |
+| `atom_type_codes` | `(n_atoms,)` int32 | 1-based codes into `atom_type_names` |
+| `masses` | `(n_atoms,)` float64 | Atomic masses |
+| `charges` | `(n_atoms,)` float64 | Atomic charges |
+| `atom_resindex` | `(n_atoms,)` int64 | Residue index for each atom |
+| `molnums` | `(n_atoms,)` int64 | Molecule id for each atom; filled with 0 when absent |
 
-**Residue 级**
+Residue-level fields:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `n_residues` | int | 残基总数 |
-| `resids` | `(n_residues,)` int64 | 残基 id |
+| `n_residues` | int | Number of residues |
+| `resids` | `(n_residues,)` int64 | Residue ids |
 
-**成键项**
+Bonded terms:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `bonds` | `(n_bond, 2)` int64 | 原子 index 对 |
-| `angles` | `(n_angle, 3)` int64 | 原子 index 三元组 |
-| `dihedrals` | `(n_dihedral, 4)` int64 | 原子 index 四元组 |
+| `bonds` | `(n_bond, 2)` int64 | Atom-index pairs |
+| `angles` | `(n_angle, 3)` int64 | Atom-index triples |
+| `dihedrals` | `(n_dihedral, 4)` int64 | Atom-index quadruples |
 
-**成键排除列表**（供近邻搜索构建用）
+Bonded exclusion lists:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `exclude_12` | `(n_ex, 2)` int64 | 成键 1-2 对 |
-| `exclude_13` | `(n_ex, 2)` int64 | angle 1-3 端点 |
-| `exclude_14` | `(n_ex, 2)` int64 | dihedral 1-4 端点 |
+| `exclude_12` | `(n_ex, 2)` int64 | Bonded 1-2 pairs |
+| `exclude_13` | `(n_ex, 2)` int64 | Angle 1-3 endpoints |
+| `exclude_14` | `(n_ex, 2)` int64 | Dihedral 1-4 endpoints |
 
-**预编码排除数组**（供 `neighbor.py` 高效查表用）
+Pre-encoded exclusion arrays for `neighbor.py`:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `excluded_nb` | `(n_ex,)` int32 | 预编码的排除 pair ID，供快速集合运算 |
-| `excluded_nb_mode` | str | 构建时的 `exclude_option`（`"resid"` / `"molid"` / `"none"`）|
-| `excluded_nb_all` | bool | 若为 True，表示系统已全局排除（单分子或单 residue），near-neighbor 搜索可直接跳过 |
+| `excluded_nb` | `(n_ex,)` int32 | Encoded excluded pair ids for fast set operations |
+| `excluded_nb_mode` | str | Construction-time `exclude_option`: `"resid"`, `"molid"`, or `"none"` |
+| `excluded_nb_all` | bool | True means the system is globally excluded, such as a single molecule or residue, so near-neighbor search can be skipped |
 
-`excluded_nb` 用 `a * n_atoms + b` 编码 `(a, b)` 对，`neighbor.py` 用 `np.isin()` 做 O(1) 向量化查找。
+`excluded_nb` encodes pair `(a, b)` as `a * n_atoms + b`. `neighbor.py` uses `np.isin()` for vectorized lookup.
 
-**虚位点分类**
+Virtual-site classification:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `real_site_indices` | `(n_real,)` int64 | 非虚位点原子 indices |
-| `virtual_site_mask` | `(n_atoms,)` bool | True 表示虚位点 |
-| `virtual_site_indices` | `(n_virtual,)` int64 | 虚位点原子 indices |
+| `real_site_indices` | `(n_real,)` int64 | Non-virtual atom indices |
+| `virtual_site_mask` | `(n_atoms,)` bool | True for virtual sites |
+| `virtual_site_indices` | `(n_virtual,)` int64 | Virtual-site atom indices |
 
-若未提供 `vp_names`：`real_site_indices = arange(n_atoms)`，`virtual_site_mask = all-False`。
+If `vp_names` is not provided, `real_site_indices = arange(n_atoms)` and `virtual_site_mask` is all false.
 
-**实例 → 类型 映射**
+Instance-to-type mappings:
 
-| 字段 | Shape / type | 说明 |
+| Field | Shape / type | Meaning |
 |---|---|---|
-| `bond_key_index` | `(n_bond,)` int32 | 每个 bond 实例 → `keys_bondtypes` 中的 index |
-| `angle_key_index` | `(n_angle,)` int32 | 同上，用于 angle |
-| `dihedral_key_index` | `(n_dihedral,)` int32 | 同上，用于 dihedral |
-| `keys_bondtypes` | `List[InteractionKey]` | bond-type key 列表（按 index 顺序）|
-| `keys_angletypes` | `List[InteractionKey]` | angle-type key 列表 |
-| `keys_dihedraltypes` | `List[InteractionKey]` | dihedral-type key 列表 |
+| `bond_key_index` | `(n_bond,)` int32 | Each bond instance -> index in `keys_bondtypes` |
+| `angle_key_index` | `(n_angle,)` int32 | Each angle instance -> index in `keys_angletypes` |
+| `dihedral_key_index` | `(n_dihedral,)` int32 | Each dihedral instance -> index in `keys_dihedraltypes` |
+| `keys_bondtypes` | `List[InteractionKey]` | Bond-type key list, in index order |
+| `keys_angletypes` | `List[InteractionKey]` | Angle-type key list |
+| `keys_dihedraltypes` | `List[InteractionKey]` | Dihedral-type key list |
 
-**类型转换 dict**
+Conversion dictionaries:
 
-| 字段 | 类型 | 说明 |
+| Field | Type | Meaning |
 |---|---|---|
-| `atom_type_name_to_code` | `dict[str, int]` | atom type name → int code |
-| `atom_type_code_to_name` | `dict[int, str]` | int code → atom type name |
-| `bond_type_id_to_key` | `dict[int, InteractionKey]` | bond type index → canonical key |
-| `angle_type_id_to_key` | `dict[int, InteractionKey]` | angle type index → canonical key |
-| `dihedral_type_id_to_key` | `dict[int, InteractionKey]` | dihedral type index → canonical key |
-| `key_to_bonded_type_id` | `dict[InteractionKey, int]` | canonical key → bonded type index |
+| `atom_type_name_to_code` | `dict[str, int]` | Atom type name -> int code |
+| `atom_type_code_to_name` | `dict[int, str]` | Int code -> atom type name |
+| `bond_type_id_to_key` | `dict[int, InteractionKey]` | Bond type index -> canonical key |
+| `angle_type_id_to_key` | `dict[int, InteractionKey]` | Angle type index -> canonical key |
+| `dihedral_type_id_to_key` | `dict[int, InteractionKey]` | Dihedral type index -> canonical key |
+| `key_to_bonded_type_id` | `dict[InteractionKey, int]` | Canonical key -> bonded type index |
 
-### 不变量
+### Invariants
 
-- **冻结**：构建后不可变。
-- 所有数组为稠密 NumPy。空 topology 产出 shape-`(0, width)` 数组，不是 `None`。
-- `bond_key_index[i]` 索引 `keys_bondtypes`，两者必须来自同一个 Universe。
-- `real_site_indices + virtual_site_indices` 是 `arange(n_atoms)` 的划分。
-- `exclude_bonded` 只控制成键不变排除（`exclude_12/13/14`）。nonbonded 排除策略在 `neighbor.py`。
-- `excluded_nb_all=True` 时 `excluded_nb` 为空数组（单分子系统的快速路径）。
-- `molnums` 源拓扑中不存在时填 0。
+- The object is frozen after construction.
+- All arrays are dense NumPy arrays. Empty topology sections are arrays with shape `(0, width)`, not `None`.
+- `bond_key_index[i]` indexes `keys_bondtypes`; both must come from the same Universe.
+- `real_site_indices` and `virtual_site_indices` partition `arange(n_atoms)`.
+- `exclude_bonded` controls invariant bonded exclusions only: `exclude_12`, `exclude_13`, `exclude_14`.
+- Nonbonded exclusion policy lives in `neighbor.py`.
+- When `excluded_nb_all=True`, `excluded_nb` is empty as a fast path for single-molecule systems.
+- `molnums` is filled with 0 when it is absent from the source topology.
 
 ---
 
-## `Forcefield`（forcefield.py）
+## `Forcefield`
 
-`MutableMapping[InteractionKey, List[BasePotential]]`，附带 mask、bounds、param vector 缓存。
+`Forcefield` is a `MutableMapping[InteractionKey, List[BasePotential]]` with masks, bounds, and parameter-vector caches.
 
-### 构建
+### Construction
 
 ```python
 from AceCG.topology.forcefield import Forcefield
 
-ff = Forcefield({key: [pot1, pot2]})  # 从 dict 构建
-ff2 = Forcefield(ff)                  # copy-construct（shallow potential refs）
-ff3 = ff.deepcopy()                   # 完整深拷贝
-ff4 = copy.deepcopy(ff3)              # 同上，两者均安全
+ff = Forcefield({key: [pot1, pot2]})  # build from dict
+ff2 = Forcefield(ff)                  # copy-construct; shallow potential refs
+ff3 = ff.deepcopy()                   # full deep copy
+ff4 = copy.deepcopy(ff3)              # also safe
 ```
 
-### 参数向量
+### Parameter Vector
 
-扁平参数向量是所有 potential 的 `get_params()` 按插入顺序拼接而成。
+The flattened parameter vector is the concatenation of `get_params()` from all potentials in insertion order.
 
 ```python
-ff.n_params()          # 总标量参数数
-L = ff.param_array()   # (n_params,) float64 拷贝
-ff.update_params(L)    # 写回所有 potential + 刷新缓存
+ff.n_params()          # total scalar parameter count
+L = ff.param_array()   # (n_params,) float64 copy
+ff.update_params(L)    # write back to all potentials and refresh caches
 ```
 
-切片辅助：
+Slice helpers:
 
 ```python
 ff.param_slices()         # [(key, pot_idx, slice), ...]
@@ -204,22 +204,22 @@ ff.interaction_offsets()  # [slice, ...]
 ff.param_index_map()      # [(key, "k"), (key, "r0"), ...]
 ```
 
-### Mask
+### Masks
 
-**L2（per-parameter）** `param_mask` 和 **L1（per-key）** `key_mask` 双向同步：
+The L2 per-parameter `param_mask` and L1 per-key `key_mask` are synchronized both ways:
 
 ```python
-ff.param_mask                                       # (n_params,) bool，默认全 True
-ff.param_mask = np.array([True, True, False])        # setter 推导 key_mask
+ff.param_mask
+ff.param_mask = np.array([True, True, False])  # setter derives key_mask
 
-ff.key_mask                                         # {key: bool}
-ff.key_mask = {bond_key: False}                     # setter 传播到 param_mask
+ff.key_mask
+ff.key_mask = {bond_key: False}                # setter propagates to param_mask
 ```
 
-- L1→L2：设置 `key_mask = {k: False}` 将 key k 的整个 param block 清零
-- L2→L1：`key_mask[k] = any(param_mask[block])`，只要有一个参数 active，该 key 就 active
+- L1 -> L2: setting `key_mask = {k: False}` clears the entire parameter block for key `k`.
+- L2 -> L1: `key_mask[k] = any(param_mask[block])`; a key is active if any parameter in its block is active.
 
-按 glob/regex 模式构建：
+Pattern-based construction:
 
 ```python
 ff.build_mask(mode="freeze", global_patterns=["*k*"])
@@ -231,71 +231,73 @@ ff.build_mask(mode="train", patterns={key: ["r0"]})
 ```python
 lb, ub = ff.param_bounds
 ff.param_bounds = (lb, ub)
-ff.build_bounds(global_bounds={"*k*": (0, None)})  # 模式式构建
+ff.build_bounds(global_bounds={"*k*": (0, None)})
 L_safe = ff.apply_bounds(L)
 ```
 
-有 `param_bounds()` 方法的 potential 在构建时自动填充 bounds。
+Potentials that implement `param_bounds()` automatically contribute bounds during construction.
 
-### VP mask
+### VP Masks
 
-构建一次，冻结（因为 VP 是预定义的拓扑特性）：
+VP masks are built once and then frozen because VP status is a predefined topology property:
 
 ```python
 ff.set_vp_masks(["VP"])
-ff.virtual_mask         # key 的所有类型都是 VP → True
-ff.real_mask            # key 的类型都不是 VP → True
-ff.real_virtual_mask    # 含 VP 和 real 的混合 key → True
+ff.virtual_mask         # all types in key are VP -> True
+ff.real_mask            # no type in key is VP -> True
+ff.real_virtual_mask    # mixed real / VP key -> True
 ff.direct_active_mask   # ~virtual_mask
 ```
 
-### Key 增删
+### Key Insertion and Deletion
 
 ```python
-ff[new_key] = [pot]  # 插入：param vector 增长，cache 局部更新
-del ff[old_key]      # 删除：param vector 缩短，cache 局部更新
+ff[new_key] = [pot]  # insert: parameter vector grows, caches update locally
+del ff[old_key]      # delete: parameter vector shrinks, caches update locally
 ```
 
-增量 `_splice_caches` 在不全量重建的情况下保持 `param_mask`、`param_bounds`、VP mask 一致。
+The incremental `_splice_caches` path keeps `param_mask`, `param_bounds`, and VP masks consistent without a full rebuild.
 
-### 遍历
+### Iteration
 
 ```python
-for key in ff:                           # 遍历 key
-for key, pot in ff.iter_potentials():    # 展平遍历 BasePotential
+for key in ff:
+    ...
+for key, pot in ff.iter_potentials():
+    ...
 ```
 
 ---
 
 ## `neighbor.py`
 
-`neighbor.py` 是 topology 层的近邻搜索辅助模块。
-消耗原始坐标 + 一个 `TopologyArrays` 快照，返回原子 index pair 或邻接表。
-**不计算距离、能量、力或 `FrameGeometry`**。
+`neighbor.py` is the topology-layer neighbor-search helper. It consumes raw coordinates and a `TopologyArrays` snapshot and returns atom index pairs or adjacency lists. It does not compute distances, energies, forces, or `FrameGeometry`.
 
-### 公开入口点
+### Public Entry Points
 
-| 函数 | 职责 |
+| Function | Responsibility |
 |---|---|
-| `parse_exclude_option(s)` | 规范化 exclude_option 字符串（支持多种 alias）|
-| `compute_pairs_by_type()` | **当前引擎路径**：一次全局近邻搜索，按 canonical `InteractionKey` 分 bin |
-| `compute_neighbor_list()` | 通用 per-atom 邻接表，当前 compute core 不使用 |
+| `parse_exclude_option(s)` | Normalize `exclude_option` strings and aliases |
+| `compute_pairs_by_type()` | Current engine path: one global neighbor search, binned by canonical `InteractionKey` |
+| `compute_neighbor_list()` | Generic per-atom adjacency list; not used by the current compute core |
 
-### 排除协议
+### Exclusion Protocol
 
-成键排除始终来自 `TopologyArrays`：
+Bonded exclusions always come from `TopologyArrays`:
 
-- `exclude_12` / `exclude_13` / `exclude_14`（构建时已合并入 `excluded_nb`）
+- `exclude_12`
+- `exclude_13`
+- `exclude_14`
 
-额外 nonbonded 排除由 `exclude_option` 选择：
+Additional nonbonded exclusions are selected by `exclude_option`:
 
-| Option | 含义 |
+| Option | Meaning |
 |---|---|
-| `resid` | 排除同 residue pair |
-| `molid` | 排除同分子 pair |
-| `none` | 不额外排除 |
+| `resid` | Exclude pairs in the same residue |
+| `molid` | Exclude pairs in the same molecule |
+| `none` | Do not add extra exclusions |
 
-`parse_exclude_option()` 接受 alias（如 `"residue"` → `"resid"`，`"mol"` → `"molid"`）。
+`parse_exclude_option()` accepts aliases such as `"residue"` -> `"resid"` and `"mol"` -> `"molid"`.
 
 ### `compute_pairs_by_type()`
 
@@ -313,68 +315,64 @@ pair_cache = compute_pairs_by_type(
 )
 ```
 
-返回：
+Returns:
 
 ```python
-{InteractionKey: (a_idx, b_idx)}   # a_idx, b_idx 为全局原子 index 数组
+{InteractionKey: (a_idx, b_idx)}  # a_idx and b_idx are global atom-index arrays
 ```
 
-### 边界与不变量
+### Boundaries and Invariants
 
-- 一个全局 cutoff（通常取所有 pair potential 的最大截断）
-- `sel_indices` 缩小搜索域，但**不**重新编号原子
-- 输出 index 始终是全局原子 index
-- per-key cutoff 过滤推迟到 `compute_frame_geometry()` 中
-- 此模块只做拓扑侧路由，应保持数值上简单
+- A single global cutoff is used, usually the maximum cutoff across all pair potentials.
+- `sel_indices` restricts the search domain but does not renumber atoms.
+- Output indices are always global atom indices.
+- Per-key cutoff filtering is deferred to `compute_frame_geometry()`.
+- This module only performs topology-side routing and should stay numerically simple.
 
 ---
 
-## 数据流边界
+## Data-Flow Boundaries
 
-### 所有权
+### Ownership
 
-| 数据 | 所有者 | 消费者 |
+| Data | Owner | Consumers |
 |---|---|---|
-| `param_mask`（L2）| `Forcefield` | `energy()` / `force()` 通过 `ff.param_mask` 读取 |
-| `key_mask`（L1）| `Forcefield` | 同上；engine 传给 `compute_frame_geometry()` 作为 `interaction_mask` |
-| `real_site_indices` | `TopologyArrays` | `compute_frame_geometry()`→`FrameGeometry`→`force()` |
+| `param_mask` (L2) | `Forcefield` | `energy()` / `force()` through `ff.param_mask` |
+| `key_mask` (L1) | `Forcefield` | Same as above; engine also passes it to `compute_frame_geometry()` as `interaction_mask` |
+| `real_site_indices` | `TopologyArrays` | `compute_frame_geometry()` -> `FrameGeometry` -> `force()` |
 
-### Snapshot 协议
+### Snapshot Protocol
 
-Workflow 在 dispatch 给 engine 前创建 **Forcefield snapshot**，携带当前 mask：
+Before dispatching to the engine, the workflow creates a force-field snapshot carrying the current mask:
 
 ```python
-ff_snap = Forcefield(self.trainer.forcefield)   # copy-construct
-# 传入 engine/reducers 的 forcefield_snapshot
+ff_snap = Forcefield(self.trainer.forcefield)
 ```
 
-`Forcefield.param_mask` / `key_mask` 是规范的 trainability state。
-Optimizer 在初始化时接收 mask 副本用于执行；workflow 在 snapshot 前只更新 `Forcefield` 上的 mask。
+`Forcefield.param_mask` and `Forcefield.key_mask` are the canonical trainability state. The optimizer receives a mask copy at initialization for execution, but the workflow updates masks on `Forcefield` before taking snapshots.
 
-Engine 通过 MPI broadcast 传播 `forcefield_snapshot` 和 `topology_arrays`。
-所有 per-frame mask 从这两个对象读取，不额外穿透传入。
+The engine broadcasts `forcefield_snapshot` and `topology_arrays` through MPI. All per-frame masks are read from those two objects.
 
-### L1 `interaction_mask` 在 engine 里的流动
+### L1 `interaction_mask` Flow in the Engine
 
-Engine 读取 `forcefield_snapshot.key_mask` 一次，作为 `interaction_mask` kwarg 传给 `compute_frame_geometry()`，跳过禁用 key 的几何计算。
-同一个 `key_mask` 在 `energy()` / `force()` 里再次检查，作为安全兜底。
+The engine reads `forcefield_snapshot.key_mask` once and passes it to `compute_frame_geometry()` as `interaction_mask`, skipping geometry for disabled keys. The same `key_mask` is checked again in `energy()` / `force()` as a safety net.
 
 ---
 
-## Workflow 合法访问模式
+## Allowed Workflow Access Patterns
 
-**Do**：
+Do:
 
-- 为目标 topology 构建一个 Universe
-- 每次 topology 变化时调用一次 `collect_topology_arrays()`
-- 对 LAMMPS 输入显式传入 `atom_type_name_aliases`
-- 把 `TopologyArrays` 作为不可变快照传入 compute / engine 代码
-- 让 `neighbor.py` 负责 nonbonded 排除路由
+- build a Universe for the target topology
+- call `collect_topology_arrays()` once whenever topology changes
+- pass explicit `atom_type_name_aliases` for LAMMPS inputs
+- pass `TopologyArrays` as an immutable snapshot into compute / engine code
+- let `neighbor.py` own nonbonded exclusion routing
 
-**Do not**：
+Do not:
 
-- 就地 mutate `TopologyArrays` 字段
-- 在 per-frame 循环内重建 topology arrays
-- 绕过 `exclude_bonded` / `exclude_option` 发明 workflow-local 排除规则
-- 把 `frame_id`、trajectory slicing 或 MPI rank 分配当做 topology 职责
-- 在 topology snapshot 已构建后重新解释 atom-type alias
+- mutate `TopologyArrays` fields in place
+- rebuild topology arrays inside per-frame loops
+- invent workflow-local exclusion rules that bypass `exclude_bonded` / `exclude_option`
+- treat `frame_id`, trajectory slicing, or MPI rank assignment as topology responsibilities
+- reinterpret atom-type aliases after the topology snapshot has been built

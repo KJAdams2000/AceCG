@@ -64,7 +64,18 @@ from .coordinates_writers import write_gro, write_lammps_data, write_pdb
 # -----------------------------
 
 def load_mapping_yaml(path: Union[str, Path]) -> Dict[str, Any]:
-    """Load mapping YAML file."""
+    """Load an AceCG coordinate mapping YAML file.
+
+    Parameters
+    ----------
+    path : str or Path
+        YAML file path.
+
+    Returns
+    -------
+    dict
+        Parsed mapping dictionary.
+    """
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
@@ -289,12 +300,12 @@ def build_CG_coords(
     lammps_atom_style: str = "full",
 ) -> Dict[str, Any]:
     """
-    Build CG coordinates from AA coordinates and mapping.
+    Build CG coordinates from AA coordinates and a mapping.
 
     Parameters
     ----------
     aa_coord
-        AA coordinate file path (any MDAnalysis-supported format).
+        AA coordinate file path in any MDAnalysis-supported format.
     mapping
         Either a mapping dict OR a YAML file path to load.
     aa_topology

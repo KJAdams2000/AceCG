@@ -139,6 +139,14 @@ class RMSpropMaskedOptimizer(BaseOptimizer):
         return self.last_update
 
     def state_dict(self) -> dict:
+        """Return optimizer state including RMSprop accumulators.
+
+        Returns
+        -------
+        dict
+            Serializable state with base fields, running averages, optional
+            momentum/centered buffers, and hyperparameters.
+        """
         d = super().state_dict()
         d.update({
             "alpha": float(self.alpha),
@@ -156,6 +164,14 @@ class RMSpropMaskedOptimizer(BaseOptimizer):
         return d
 
     def load_state_dict(self, state: dict) -> None:
+        """Restore RMSprop state from :meth:`state_dict`.
+
+        Parameters
+        ----------
+        state : dict
+            State dictionary produced by a compatible
+            :class:`RMSpropMaskedOptimizer`.
+        """
         super().load_state_dict(state)
         self.alpha = float(state["alpha"])
         self.eps = float(state["eps"])

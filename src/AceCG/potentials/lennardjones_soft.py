@@ -28,17 +28,26 @@ class LennardJonesSoftPotential(BasePotential):
         n: int,
         alpha_LJ: float,
     ) -> None:
-        super().__init__()
-        """
-        Initialize the soft-core Lennard-Jones potential.
+        """Initialize the soft-core Lennard-Jones potential.
 
-        :param epsilon: Depth of the potential well.
-        :param sigma: Lennard-Jones sigma parameter.
-        :param lam: Soft-core lambda parameter (0 <= lambda <= 1).
-        :param cutoff: Cutoff distance (stored for consistency).
-        :param n: Exponent on lambda in the soft-core prefactor, global variable.
-        :param alpha_LJ: Soft-core parameter alpha_LJ, global variable.
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Pair type labels.
+        epsilon : float
+            Depth of the potential well.
+        sigma : float
+            Lennard-Jones distance scale.
+        lam : float
+            Soft-core lambda value, usually in ``[0, 1]``.
+        cutoff : float
+            Pair cutoff distance stored for LAMMPS export.
+        n : int
+            Exponent on lambda in the soft-core prefactor.
+        alpha_LJ : float
+            Soft-core denominator regularization parameter.
         """
+        super().__init__()
         self.typ1 = typ1
         self.typ2 = typ2
         self.cutoff = cutoff
@@ -61,6 +70,7 @@ class LennardJonesSoftPotential(BasePotential):
         self.n = n
 
     def is_param_linear(self) -> np.ndarray:
+        """Return which soft-core LJ parameters enter the energy linearly."""
         return np.array([True, False, False], dtype=bool)
 
     # ------------------------------------------------------------------

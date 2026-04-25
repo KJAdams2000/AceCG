@@ -108,27 +108,28 @@ def collect_topology_arrays(
     atom_type_name_aliases: Optional[Mapping[int, str]] = None,
     vp_names: Optional[Iterable[str]] = None,
 ) -> TopologyArrays:
-    """
-    This doc string is HUMAN written.
+    """Serialize topology data from an MDAnalysis universe.
 
-    atom_type_name_aliases:
-        Optional mapping from LAMMPS atom type code (int) → atom type name (str). 
-        This is needed when the source Universe does not have explicit atom names, 
-        as is common for LAMMPS data files. 
-        If not provided and atom names are not defined, 
-        atom names will be set to the same values as atom types.
+    Parameters
+    ----------
+    u : MDAnalysis.Universe
+        Universe containing atom metadata and optional bonded topology.
+    exclude_bonded : str, default="111"
+        Three-character string of ``"1"``/``"0"`` flags controlling whether
+        1-2, 1-3, and 1-4 bonded exclusions are included.
+    exclude_option : {"resid", "molid", "none"}, default="resid"
+        Nonbonded exclusion mode cached for neighbor-list construction.
+    atom_type_name_aliases : Mapping[int, str], optional
+        Mapping from LAMMPS atom type id to canonical type name. This is needed
+        when the source universe lacks explicit atom names.
+    vp_names : Iterable[str], optional
+        Type names treated as virtual-particle sites.
 
-    Serialize topology attributes from a Universe for passing to worker processes.
-    Exclude bonded: 
-        exclude_12 / exclude_13 / exclude_14 flags, as a 3-character string of "1" / "0"
-            indicating whether to include the corresponding exclusions in the output arrays.
-        For example, "111" means include all 1-2, 1-3, 1-4 exclusions, "100" means include only
-            1-2 exclusions, etc.
-    Exclude nonbonded:
-        exclude_option selects one immutable cached exclusion payload for neighbor-list
-        construction. The cache combines bonded exclusions with the configured nonbonded
-        mode so workers do not rebuild exclusion ids every frame.
-    
+    Returns
+    -------
+    TopologyArrays
+        Immutable collection of atom arrays, bonded instance arrays, exclusion
+        ids, type translators, and canonical bonded interaction keys.
     """
     out = {}
     

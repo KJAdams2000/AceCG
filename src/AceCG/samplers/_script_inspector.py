@@ -14,16 +14,24 @@ class ScriptInfo(Protocol):
     """
 
     @property
-    def input_path(self) -> Path: ...
+    def input_path(self) -> Path:
+        """Return the source input-script path."""
+        ...
 
     @property
-    def init_data_path(self) -> Path: ...
+    def init_data_path(self) -> Path:
+        """Return the initial coordinate/data file required by the script."""
+        ...
 
     @property
-    def trajectory_path(self) -> Path: ...
+    def trajectory_path(self) -> Path:
+        """Return the trajectory file produced by the script."""
+        ...
 
     @property
-    def checkpoint_path(self) -> Optional[Path]: ...
+    def checkpoint_path(self) -> Optional[Path]:
+        """Return the optional checkpoint/replay output path."""
+        ...
 
 
 def parse_script(script_path: Path, *, backend: str = "lammps") -> ScriptInfo:

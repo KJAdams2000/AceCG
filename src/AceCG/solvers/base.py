@@ -12,12 +12,30 @@ from ..topology.forcefield import Forcefield
 
 
 class BaseSolver(ABC):
-    """Abstract base class for one-shot solvers."""
+    """Abstract base class for one-shot solver-layer objects.
+
+    Parameters
+    ----------
+    forcefield : Forcefield
+        Forcefield copied into the solver. Solvers write solved parameters back
+        into this private copy.
+    logger : object, optional
+        Optional scalar logger exposing ``add_scalar``.
+    """
 
     BATCH_SCHEMA: Dict[str, Any] = {}
     RETURN_SCHEMA: Dict[str, Any] = {}
 
     def __init__(self, forcefield: Forcefield, logger=None):
+        """Create a solver with its own forcefield copy.
+
+        Parameters
+        ----------
+        forcefield : Forcefield
+            Source forcefield whose parameter order defines the solver system.
+        logger : object, optional
+            Optional scalar logger used by concrete solvers.
+        """
         self.forcefield = copy.deepcopy(forcefield)
         self.logger = logger
 
@@ -30,7 +48,13 @@ class BaseSolver(ABC):
         }
 
     def get_params(self) -> np.ndarray:
-        """Return the current full parameter vector."""
+        """Return the current full parameter vector.
+
+        Returns
+        -------
+        np.ndarray
+            One-dimensional parameter vector in forcefield order.
+        """
         return self.forcefield.param_array()
 
     def update_forcefield(self, params: np.ndarray) -> None:
@@ -43,4 +67,16 @@ class BaseSolver(ABC):
 
     @abstractmethod
     def solve(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        """Solve one canonical statistics batch and return a result dict."""
+        """Solve one canonical statistics batch.
+
+        Parameters
+        ----------
+        batch : dict
+            Solver-specific statistics dictionary.
+
+        Returns
+        -------
+        dict
+            Solver-specific result dictionary, typically containing solved
+            parameters and diagnostics.
+        """

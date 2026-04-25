@@ -134,14 +134,17 @@ class VPTopologyTemplate:
 
     @property
     def n_atoms(self) -> int:
+        """Return total atoms in the grown topology."""
         return len(self.atom_names)
 
     @property
     def n_real(self) -> int:
+        """Return the number of real, non-VP atoms."""
         return int(self.real_indices.size)
 
     @property
     def n_vp(self) -> int:
+        """Return the number of inserted virtual-particle atoms."""
         return sum(int(arr.size) for arr in self.vp_indices_by_name.values())
 
 

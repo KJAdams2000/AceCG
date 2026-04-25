@@ -65,6 +65,22 @@ class ConditionedSampler(BaseSampler):
         epoch_dir: PathLike,
         n_runs: int,
     ) -> EpochState:
+        """Prepare one conditioned-sampling epoch.
+
+        Parameters
+        ----------
+        iteration_index : int
+            Workflow iteration index.
+        epoch_dir : PathLike
+            Directory where run subdirectories are created.
+        n_runs : int
+            Number of conditioned replicas to stage.
+
+        Returns
+        -------
+        EpochState
+            Staged run plans and metadata for the epoch.
+        """
         if n_runs > len(self._init_pool):
             raise ValueError(f"n_runs={n_runs} exceeds pool size {len(self._init_pool)}")
 

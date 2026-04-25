@@ -22,6 +22,20 @@ def _uniform_grid(xmin: float, xmax: float, dx: float) -> np.ndarray:
 
 
 def integrate_force_to_potential(x: np.ndarray, force: np.ndarray) -> np.ndarray:
+    """Integrate a force table into a cutoff-anchored potential.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Monotonic grid coordinates.
+    force : np.ndarray
+        Force values on ``x``.
+
+    Returns
+    -------
+    np.ndarray
+        Potential values with the final grid point anchored at zero.
+    """
     x = np.asarray(x, dtype=float).ravel()
     f = np.asarray(force, dtype=float).ravel()
     if x.size == 0:
@@ -150,7 +164,26 @@ def write_lammps_table(
     eq: float | None = None,
     fp: Tuple[float, float] | None = None,
 ) -> None:
-    """Write a LAMMPS-style pair/bond/angle table file."""
+    """Write a LAMMPS-style pair, bond, or angle table file.
+
+    Parameters
+    ----------
+    filename : str or Path
+        Destination table path.
+    r, V, F : np.ndarray
+        Grid coordinates, potential values, and force values. All arrays must
+        have the same shape.
+    comment : str, default="LAMMPS Table written by AceCG"
+        Comment text written above the table.
+    table_name : str, default="Table1"
+        LAMMPS table section name.
+    table_style : {"pair", "bond", "angle"}, default="pair"
+        Header format to write.
+    eq : float, optional
+        Equilibrium coordinate for bonded table headers.
+    fp : tuple[float, float], optional
+        Endpoint force derivatives for bonded table headers.
+    """
     r = np.asarray(r, dtype=float)
     V = np.asarray(V, dtype=float)
     F = np.asarray(F, dtype=float)
@@ -186,6 +219,21 @@ def write_lammps_table_bundle(
     outdir: str | Path,
     tables: Dict[str, Dict[str, Any]],
 ) -> Dict[str, str]:
+    """Write a collection of LAMMPS table payloads.
+
+    Parameters
+    ----------
+    outdir : str or Path
+        Directory where ``*.table`` files are written.
+    tables : dict
+        Mapping from table stem to payload dictionaries containing ``r``,
+        ``V``, ``F``, and optional style/header metadata.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping from table stem to written file path.
+    """
     out_path = Path(outdir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -212,6 +260,20 @@ def write_lammps_table_bundle(
 
 
 def interaction_table_stem(style: str, types: Sequence[str]) -> str:
+    """Return AceCG's default filename stem for an interaction table.
+
+    Parameters
+    ----------
+    style : str
+        Interaction style such as ``"pair"``, ``"bond"``, or ``"angle"``.
+    types : Sequence[str]
+        Interaction type labels.
+
+    Returns
+    -------
+    str
+        Stable table stem without extension.
+    """
     joined = "_".join(types)
     if style == "pair":
         return joined
@@ -227,6 +289,21 @@ def interaction_table_stem(style: str, types: Sequence[str]) -> str:
 
 
 def find_equilibrium(x: np.ndarray, force: np.ndarray) -> float:
+    """Estimate the equilibrium coordinate from a force table.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        One-dimensional coordinate grid.
+    force : np.ndarray
+        Force values on ``x``.
+
+    Returns
+    -------
+    float
+        Coordinate of the minimum of the integrated potential, refined by a
+        local quadratic fit when possible.
+    """
     x = np.asarray(x, dtype=float)
     force_values = np.asarray(force, dtype=float)
     if x.ndim != 1 or force_values.ndim != 1 or x.size != force_values.size:
@@ -272,6 +349,19 @@ def _eval_bspline_force_on_model_grid(
 
 
 def estimate_table_fp(x: np.ndarray, y: np.ndarray) -> Tuple[float, float] | None:
+    """Estimate endpoint derivatives for a tabulated curve.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        One-dimensional grid and values.
+
+    Returns
+    -------
+    tuple[float, float] or None
+        Left and right finite-difference slopes, or ``None`` if they cannot be
+        estimated.
+    """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     if x.size < 2 or y.size < 2:
@@ -352,6 +442,21 @@ def build_forcefield_tables(
     cfg: Dict[str, Any],
     forcefield: "Forcefield",
 ) -> Dict[str, Any]:
+    """Build serializable table payloads from a forcefield and FM config.
+
+    Parameters
+    ----------
+    cfg : dict
+        Runtime FM configuration containing an ``"interactions"`` list.
+    forcefield : Forcefield
+        Forcefield whose potentials are evaluated on export grids.
+
+    Returns
+    -------
+    dict
+        Payload with a ``"tables"`` mapping ready for
+        :func:`write_lammps_table_bundle`.
+    """
     from ..potentials.base import IteratePotentials
 
     payload: Dict[str, Any] = {"tables": {}}
@@ -389,6 +494,25 @@ def export_tables(
     *,
     table_payload: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    """Export forcefield tables and return a manifest.
+
+    Parameters
+    ----------
+    cfg : dict
+        Runtime FM configuration.
+    forcefield : Forcefield
+        Forcefield to evaluate.
+    outdir : str or Path
+        Destination directory for table files.
+    table_payload : dict, optional
+        Precomputed table payload. If omitted, it is built from ``cfg`` and
+        ``forcefield``.
+
+    Returns
+    -------
+    dict
+        Manifest containing per-table metadata and written file paths.
+    """
     if table_payload is None:
         table_payload = build_forcefield_tables(cfg=cfg, forcefield=forcefield)
 
@@ -428,6 +552,21 @@ def compare_table_files(
     *,
     ngrid: int = 2000,
 ) -> Dict[str, float]:
+    """Compare two LAMMPS table files on a common interpolation grid.
+
+    Parameters
+    ----------
+    reference_file, candidate_file : str or Path
+        Table files to compare.
+    ngrid : int, default=2000
+        Number of interpolation points in the overlapping coordinate range.
+
+    Returns
+    -------
+    dict[str, float]
+        Maximum absolute energy/force differences and equilibrium-coordinate
+        diagnostics.
+    """
     xr, vr, fr = parse_lammps_table(str(reference_file))
     xc, vc, fc = parse_lammps_table(str(candidate_file))
 
@@ -513,6 +652,17 @@ def cap_table_forces(
     max_force: float = 100.0,
     scale: float = 1.0,
 ) -> None:
+    """Clamp force values in an existing LAMMPS table file.
+
+    Parameters
+    ----------
+    table_path : str or Path
+        Table file to edit in place.
+    max_force : float, default=100.0
+        Absolute force cap.
+    scale : float, default=1.0
+        Optional multiplier applied before clipping.
+    """
     max_f = abs(float(max_force))
     scale_f = float(scale)
     path = Path(table_path)

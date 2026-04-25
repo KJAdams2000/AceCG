@@ -16,6 +16,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class FMInteractionSpec:
+    """One force-matching interaction model specification.
+
+    Attributes describe the interaction key, model family/size, coordinate
+    domain, optional force cap, initialization mode, and model-specific
+    overrides parsed from an ``.acg`` config.
+    """
     style: str
     types: Tuple[str, ...]
     model: str
@@ -38,6 +44,7 @@ class FMInteractionSpec:
         return InteractionKey(style=self.style, types=self.types)
 
     def to_runtime_dict(self) -> Dict[str, Any]:
+        """Convert this spec to the runtime dictionary consumed by workflows."""
         payload: Dict[str, Any] = {
             "style": self.style,
             "types": list(self.types),
@@ -58,14 +65,17 @@ class FMInteractionSpec:
 
 @dataclass(frozen=True)
 class FMTrainingSpecs:
+    """Grouped force-matching specs for pair, bond, and angle interactions."""
     pair_specs: Tuple[FMInteractionSpec, ...] = ()
     bond_specs: Tuple[FMInteractionSpec, ...] = ()
     angle_specs: Tuple[FMInteractionSpec, ...] = ()
 
     def flattened(self) -> Tuple[FMInteractionSpec, ...]:
+        """Return all FM specs in pair, bond, then angle order."""
         return self.pair_specs + self.bond_specs + self.angle_specs
 
     def to_runtime_dict(self) -> Dict[str, Any]:
+        """Convert grouped specs to workflow runtime dictionaries."""
         return {
             "pair_specs": [s.to_runtime_dict() for s in self.pair_specs],
             "bond_specs": [s.to_runtime_dict() for s in self.bond_specs],
@@ -75,6 +85,7 @@ class FMTrainingSpecs:
 
 @dataclass(frozen=True)
 class ForcefieldMaskSpec:
+    """Parsed forcefield mask entries keyed by interaction."""
     entries: Tuple[Tuple["InteractionKey", Tuple[str, ...]], ...] = ()
 
     def __bool__(self) -> bool:
@@ -105,6 +116,7 @@ class SystemConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
+    """Training-method, optimizer, solver, and output configuration."""
     method: str = ""
     para_path: Optional[str] = None
     fm_specs: FMTrainingSpecs = field(default_factory=FMTrainingSpecs)
@@ -141,6 +153,7 @@ class SamplingConfig:
 
 @dataclass(frozen=True)
 class SchedulerConfig:
+    """Task-scheduler and MPI launcher configuration."""
     launcher: Optional[str] = None
     mpirun_path: Optional[str] = None
     mpi_family: Optional[str] = None
@@ -152,6 +165,7 @@ class SchedulerConfig:
 
 @dataclass(frozen=True)
 class AARefConfig:
+    """All-atom reference trajectory configuration."""
     trajectory_files: Tuple[str, ...] = ()
     trajectory_format: str = "LAMMPSDUMP"
     skip_frames: int = 0
@@ -168,6 +182,7 @@ class AARefConfig:
 
 @dataclass(frozen=True)
 class ConditioningConfig:
+    """Conditioned latent-sampling configuration for CDREM/CDFM workflows."""
     input: Optional[str] = None
     init_config_pool: Optional[str] = None
     init_force_pool: Optional[str] = None
@@ -181,6 +196,7 @@ class ConditioningConfig:
 
 @dataclass(frozen=True)
 class ACGConfig:
+    """Top-level parsed AceCG configuration model."""
     path: Optional[Path] = None
     system: SystemConfig = field(default_factory=SystemConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)

@@ -17,7 +17,23 @@ def write_gro(
     beads: Sequence[Dict[str, Any]],
     box_A: Optional[np.ndarray],
 ) -> None:
-    """Write .gro with residue info. Coordinates converted Angstrom -> nm."""
+    """Write a GROMACS ``.gro`` coordinate file.
+
+    Parameters
+    ----------
+    path : str or Path
+        Destination file.
+    title : str
+        Header title.
+    coords_A : np.ndarray
+        Coordinates in Angstrom, shape ``(n_beads, 3)``. They are converted to
+        nanometers for GRO output.
+    beads : Sequence[dict]
+        Bead records containing at least ``resid``, ``resname``, and
+        ``bead_type``.
+    box_A : np.ndarray or None
+        Optional MDAnalysis-style box in Angstrom.
+    """
     path = Path(path)
     n = coords_A.shape[0]
     coords_nm = coords_A / 10.0
@@ -44,7 +60,19 @@ def write_pdb(
     coords_A: np.ndarray,
     beads: Sequence[Dict[str, Any]],
 ) -> None:
-    """Write minimal PDB with residue info. Coordinates remain in Angstrom."""
+    """Write a minimal PDB coordinate file.
+
+    Parameters
+    ----------
+    path : str or Path
+        Destination file.
+    title : str
+        PDB title line text.
+    coords_A : np.ndarray
+        Coordinates in Angstrom, shape ``(n_beads, 3)``.
+    beads : Sequence[dict]
+        Bead records containing residue and bead-name metadata.
+    """
     path = Path(path)
     with path.open("w") as f:
         f.write(f"TITLE     {title}\n")
@@ -185,7 +213,32 @@ def write_lammps_data(
     dihedrals: Optional[np.ndarray] = None,
     dihedral_type_ids: Optional[np.ndarray] = None,
 ) -> None:
-    """Write a minimal LAMMPS data file."""
+    """Write a minimal LAMMPS data file for CG coordinates.
+
+    Parameters
+    ----------
+    path : str or Path
+        Destination data file.
+    title : str
+        File title line.
+    coords_A : np.ndarray
+        Coordinates in Angstrom, shape ``(n_atoms, 3)``.
+    beads : Sequence[Mapping[str, Any]]
+        Bead records with ids, types, residue ids, masses, and charges.
+    type2id : dict[str, int]
+        Mapping from bead type name to LAMMPS atom type id.
+    type_masses : dict[str, float]
+        Mapping from bead type name to mass.
+    box_A : np.ndarray, optional
+        MDAnalysis-style box in Angstrom. If omitted, bounds are inferred from
+        coordinates with padding.
+    atom_style : {"full", "atomic"}, default="full"
+        LAMMPS atom style for the ``Atoms`` section.
+    bonds, angles, dihedrals : np.ndarray, optional
+        Optional bonded topology arrays using zero-based atom indices.
+    bond_type_ids, angle_type_ids, dihedral_type_ids : np.ndarray, optional
+        One-based type ids for each provided bonded term.
+    """
     atom_style = atom_style.lower().strip()
     if atom_style not in ("atomic", "full"):
         raise ValueError("atom_style must be 'atomic' or 'full'.")
@@ -308,4 +361,3 @@ def write_lammps_data(
                 f.write(
                     f"{dihedral_id} {int(type_id)} {int(index_i) + 1} {int(index_j) + 1} {int(index_k) + 1} {int(index_l) + 1}\n"
                 )
-

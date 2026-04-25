@@ -21,6 +21,24 @@ class HarmonicPotential(BasePotential):
     """
 
     def __init__(self, typ1, typ2, k, r0, cutoff=None, *, typ3=None, scale=1.0):
+        """Initialize a harmonic bonded potential.
+
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Type labels for the first two atoms in the interaction.
+        k : float
+            Harmonic force constant stored in the forcefield's native units.
+        r0 : float
+            Equilibrium coordinate.
+        cutoff : float, optional
+            Optional cutoff stored for compatibility with pair-style tables.
+        typ3 : int or str, optional
+            Third type label for angle interactions.
+        scale : float, default=1.0
+            Multiplicative factor applied to the squared displacement. Angle
+            terms use this to convert degree displacements into radians.
+        """
         super().__init__()
         self.typ1 = typ1
         self.typ2 = typ2
@@ -42,13 +60,16 @@ class HarmonicPotential(BasePotential):
     # F(r) = -dU/dr = -2 * k * scale * (r - r0)
 
     def value(self, r):
+        """Evaluate ``U(r) = k * scale * (r - r0)^2``."""
         k, r0 = self._params
         return k * self.scale * (np.asarray(r) - r0) ** 2
 
     def is_param_linear(self) -> np.ndarray:
+        """Return which harmonic parameters enter the energy linearly."""
         return np.array([True, False], dtype=bool)
 
     def force(self, r):
+        """Evaluate the scalar force ``-dU/dr``."""
         k, r0 = self._params
         return -2.0 * k * self.scale * (np.asarray(r) - r0)
 

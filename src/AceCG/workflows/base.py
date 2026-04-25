@@ -400,4 +400,5 @@ class BaseWorkflow(ABC):
 
     @abstractmethod
     def run(self) -> Any:
+        """Run the workflow and return its workflow-specific result."""
         ...

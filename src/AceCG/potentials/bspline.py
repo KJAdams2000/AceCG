@@ -42,6 +42,25 @@ class BSplinePotential(BasePotential):
         cutoff: float,
         bonded: bool = False,
     ) -> None:
+        """Initialize a force-basis B-spline potential.
+
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Interaction type labels.
+        knots : np.ndarray
+            Clamped knot vector accepted by ``scipy.interpolate.BSpline``.
+        coefficients : np.ndarray
+            Force-basis coefficients. Their length is the number of trainable
+            parameters.
+        degree : int
+            Polynomial degree of the B-spline basis.
+        cutoff : float
+            Cutoff/reference coordinate for nonbonded gauge handling.
+        bonded : bool, default=False
+            If ``True``, choose an energy gauge appropriate for bonded terms.
+            If ``False``, anchor the energy at the cutoff side.
+        """
         self.typ1  = typ1
         self.typ2  = typ2
         self.cutoff = float(cutoff)
@@ -68,6 +87,22 @@ class BSplinePotential(BasePotential):
 
     @staticmethod
     def n_coeff_from_range(minimum: float, maximum: float, resolution: float, degree: int) -> int:
+        """Compute the coefficient count implied by a uniform spline range.
+
+        Parameters
+        ----------
+        minimum, maximum : float
+            Inclusive coordinate range.
+        resolution : float
+            Desired grid spacing used by AceCG FM configs.
+        degree : int
+            B-spline polynomial degree.
+
+        Returns
+        -------
+        int
+            Number of force-basis coefficients.
+        """
         nbin = int(round((float(maximum) - float(minimum)) / float(resolution))) + 1
         n_coeff = nbin + int(degree) - 2
         if n_coeff <= 0:
@@ -78,6 +113,22 @@ class BSplinePotential(BasePotential):
 
     @staticmethod
     def clamped_uniform_knots(minimum: float, maximum: float, n_coeff: int, degree: int) -> np.ndarray:
+        """Build a clamped uniform knot vector.
+
+        Parameters
+        ----------
+        minimum, maximum : float
+            Coordinate support of the spline.
+        n_coeff : int
+            Number of B-spline coefficients.
+        degree : int
+            Polynomial degree.
+
+        Returns
+        -------
+        np.ndarray
+            Knot vector suitable for ``scipy.interpolate.BSpline``.
+        """
         n_internal = int(n_coeff) - int(degree) - 1
         if n_internal <= 0:
             return np.r_[np.full(int(degree) + 1, minimum), np.full(int(degree) + 1, maximum)].astype(float)
@@ -96,6 +147,26 @@ class BSplinePotential(BasePotential):
         degree: int,
         bonded: bool = False,
     ) -> "BSplinePotential":
+        """Create a zero-initialized spline from range/resolution settings.
+
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Interaction type labels.
+        minimum, maximum : float
+            Coordinate support of the spline.
+        resolution : float
+            Desired grid spacing.
+        degree : int
+            B-spline polynomial degree.
+        bonded : bool, default=False
+            Whether to use bonded energy gauge handling.
+
+        Returns
+        -------
+        BSplinePotential
+            New force-basis spline with zero coefficients.
+        """
         n_coeff = cls.n_coeff_from_range(minimum=minimum, maximum=maximum, resolution=resolution, degree=degree)
         knots = cls.clamped_uniform_knots(minimum=minimum, maximum=maximum, n_coeff=n_coeff, degree=degree)
         coeff = np.zeros(n_coeff, dtype=float)
@@ -121,7 +192,26 @@ class BSplinePotential(BasePotential):
         order: int,
         bonded: bool = False,
     ) -> "BSplinePotential":
-        """Build from order (= degree + 1) convention used in FM configs."""
+        """Build from the ``order = degree + 1`` convention used in FM configs.
+
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Interaction type labels.
+        minimum, maximum : float
+            Coordinate support of the spline.
+        resolution : float
+            Desired grid spacing.
+        order : int
+            B-spline order, equal to ``degree + 1``.
+        bonded : bool, default=False
+            Whether to use bonded energy gauge handling.
+
+        Returns
+        -------
+        BSplinePotential
+            New force-basis spline with zero coefficients.
+        """
         ord_i = int(order)
         if ord_i < 1:
             raise ValueError(f"BSpline order must be >= 1, got {order}")
@@ -158,10 +248,12 @@ class BSplinePotential(BasePotential):
 
     @property
     def degree(self) -> int:
+        """Return the B-spline polynomial degree."""
         return self.spline.k
 
     @property
     def knots(self) -> np.ndarray:
+        """Return the underlying B-spline knot vector."""
         return self.spline.t
 
     @property
@@ -200,6 +292,7 @@ class BSplinePotential(BasePotential):
         return self.spline(r)
 
     def is_param_linear(self) -> np.ndarray:
+        """Return an all-true mask because force-basis coefficients are linear."""
         return np.ones(self.n_params(), dtype=bool)
 
     def value(self, r: np.ndarray) -> np.ndarray:

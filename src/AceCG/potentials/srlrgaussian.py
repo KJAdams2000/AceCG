@@ -18,6 +18,19 @@ class SRLRGaussianPotential(BasePotential):
     """
 
     def __init__(self, typ1, typ2, A, B, C, D, cutoff):
+        """Initialize a short-range/long-range Gaussian potential.
+
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Pair type labels.
+        A, B : float
+            Strength and decay parameter for the first Gaussian term.
+        C, D : float
+            Strength and decay parameter for the second Gaussian term.
+        cutoff : float
+            Pair cutoff distance.
+        """
         super().__init__()
         self.typ1 = typ1
         self.typ2 = typ2
@@ -41,6 +54,7 @@ class SRLRGaussianPotential(BasePotential):
         ]
 
     def is_param_linear(self) -> np.ndarray:
+        """Return which SR/LR Gaussian parameters enter the energy linearly."""
         return np.array([True, False, True, False], dtype=bool)
 
     # ----------------------------------------------------------------------
@@ -74,19 +88,23 @@ class SRLRGaussianPotential(BasePotential):
     # ----------------------------------------------------------------------
 
     def dA(self, r):
+        """Return ``dU/dA`` evaluated at ``r``."""
         _, B, _, _ = self._params
         return -np.exp(-B * r * r)
 
     def dB(self, r):
+        """Return ``dU/dB`` evaluated at ``r``."""
         A, B, _, _ = self._params
         r2 = r * r
         return A * r2 * np.exp(-B * r2)
 
     def dC(self, r):
+        """Return ``dU/dC`` evaluated at ``r``."""
         _, _, _, D = self._params
         return -np.exp(-D * r * r)
 
     def dD(self, r):
+        """Return ``dU/dD`` evaluated at ``r``."""
         _, _, C, D = self._params
         r2 = r * r
         return C * r2 * np.exp(-D * r2)
@@ -96,39 +114,49 @@ class SRLRGaussianPotential(BasePotential):
     # ----------------------------------------------------------------------
 
     def dA_2(self, r):
+        """Return ``d2U/dA2``, which is zero."""
         return np.zeros_like(r)
 
     def dAdB(self, r):
+        """Return the mixed derivative ``d2U/dA dB``."""
         _, B, _, _ = self._params
         r2 = r * r
         return r2 * np.exp(-B * r2)
 
     def dAdC(self, r):
+        """Return the mixed derivative ``d2U/dA dC``, which is zero."""
         return np.zeros_like(r)
 
     def dAdD(self, r):
+        """Return the mixed derivative ``d2U/dA dD``, which is zero."""
         return np.zeros_like(r)
 
     def dB_2(self, r):
+        """Return ``d2U/dB2`` evaluated at ``r``."""
         A, B, _, _ = self._params
         r2 = r * r
         return A * r2**2 * np.exp(-B * r2)
 
     def dBdC(self, r):
+        """Return the mixed derivative ``d2U/dB dC``, which is zero."""
         return np.zeros_like(r)
 
     def dBdD(self, r):
+        """Return the mixed derivative ``d2U/dB dD``, which is zero."""
         return np.zeros_like(r)
 
     def dC_2(self, r):
+        """Return ``d2U/dC2``, which is zero."""
         return np.zeros_like(r)
 
     def dCdD(self, r):
+        """Return the mixed derivative ``d2U/dC dD``."""
         _, _, C, D = self._params
         r2 = r * r
         return r2 * np.exp(-D * r2)
 
     def dD_2(self, r):
+        """Return ``d2U/dD2`` evaluated at ``r``."""
         _, _, C, D = self._params
         r2 = r * r
         return C * r2**2 * np.exp(-D * r2)

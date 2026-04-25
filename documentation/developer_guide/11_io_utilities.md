@@ -1,147 +1,145 @@
-# 11 IO Utilities 开发者参考
+# 11 I/O Utilities Developer Reference
 
 *Updated: 2026-04-23.*
 
-> 本章只覆盖通用 IO utilities。VP-specific `latent.settings` / table 生成见 [10_vp_grower.md](10_vp_grower.md)。
+> This chapter covers generic I/O utilities only. VP-specific `latent.settings` and table generation are documented in [10_vp_grower.md](10_vp_grower.md).
 
-`AceCG.io` 在 active repo 里负责三类事情：
+In the active repo, `AceCG.io` owns three categories of functionality:
 
 - trajectory / frame extraction
-- forcefield / table / coordinate 序列化
-- 屏幕日志等轻量辅助工具
+- forcefield / table / coordinate serialization
+- lightweight helpers such as screen logging
 
-它不拥有 trainer 语义、workflow 训练循环或 compute reducer 数学。
-
----
-
-## 核心模块
-
-| 文件 | 职责 |
-|---|---|
-| `io/trajectory.py` | 轨迹切分、随机帧读取、one-pass frame iterator |
-| `io/forcefield.py` | LAMMPS forcefield / mask 读写 |
-| `io/coordinates.py` | AA→CG 坐标映射和 sanity checks |
-| `io/coordinates_writers.py` | `.gro` / `.pdb` / LAMMPS `.data` 写出 |
-| `io/tables.py` | table 读写、FM table bundle 导出 |
-| `io/logger.py` | 屏幕日志和格式化时间戳 |
+It does not own trainer semantics, workflow training loops, or compute reducer math.
 
 ---
 
-## 轨迹 API
+## Core Modules
 
-最重要的轨迹入口不是某个 workflow helper，而是 `trajectory.py` 里的几个独立函数。
-
-| 函数 | 作用 |
+| File | Responsibility |
 |---|---|
-| `iter_frames(universe, ...)` | compute runtime 和 VP grower 的规范 one-pass frame iterator |
-| `read_lammpstrj_frames(path, frame_ids, ...)` | 针对显式 frame-id 列表做随机访问读取 |
-| `count_lammpstrj_frames_and_atoms(path)` | 轻量扫描 segment frame 数和 atom 数 |
-| `split_lammpstrj(...)` | 基于文本解析切分大轨迹 |
-| `split_lammpstrj_mdanalysis(...)` | 基于 MDAnalysis 的切分路径 |
+| `io/trajectory.py` | Trajectory splitting, random frame reading, one-pass frame iteration |
+| `io/forcefield.py` | LAMMPS forcefield / mask I/O |
+| `io/coordinates.py` | AA-to-CG coordinate mapping and sanity checks |
+| `io/coordinates_writers.py` | `.gro` / `.pdb` / LAMMPS `.data` writing |
+| `io/tables.py` | Table I/O and FM table-bundle export |
+| `io/logger.py` | Screen logging and formatted timestamps |
 
-开发者合同：
+---
 
-- `iter_frames()` 是 compute 层的一等入口，返回 `(frame_id, positions, box, forces)`
-- `frame_ids` 一旦显式给出，就覆盖 `start/end/every`
-- 是否读取 force 由 `include_forces` 和 trajectory 本身是否带 force 列共同决定
+## Trajectory API
+
+The most important trajectory entry points are standalone functions in `trajectory.py`, not workflow helpers.
+
+| Function | Purpose |
+|---|---|
+| `iter_frames(universe, ...)` | Canonical one-pass frame iterator for compute runtime and VP grower |
+| `read_lammpstrj_frames(path, frame_ids, ...)` | Random-access read for explicit frame-id lists |
+| `count_lammpstrj_frames_and_atoms(path)` | Lightweight scan of segment frame count and atom count |
+| `split_lammpstrj(...)` | Text-parser-based splitting for large trajectories |
+| `split_lammpstrj_mdanalysis(...)` | MDAnalysis-based splitting path |
+
+Developer contract:
+
+- `iter_frames()` is a first-class compute-layer entry point and returns `(frame_id, positions, box, forces)`.
+- Explicit `frame_ids` override `start/end/every`.
+- Whether forces are read is controlled by `include_forces` and by whether the trajectory contains force columns.
 
 ---
 
 ## Forcefield I/O
 
-`io/forcefield.py` 是 runtime `Forcefield` 与 LAMMPS settings 文件之间的桥。
+`io/forcefield.py` bridges runtime `Forcefield` objects and LAMMPS settings files.
 
-| 函数 | 作用 |
+| Function | Purpose |
 |---|---|
-| `ReadLmpFFMask()` | 解析 authored forcefield mask 文件 |
-| `ReadLmpFF()` | 从 LAMMPS-style settings 读出 `Forcefield` |
-| `WriteLmpFF()` | 把当前 `Forcefield` 写回新的 settings / table 文件 |
-| `resolve_source_table_entries()` | 为 FM source-table 路径解析原始 table token 和 table name |
+| `ReadLmpFFMask()` | Parse authored forcefield mask files |
+| `ReadLmpFF()` | Read a `Forcefield` from LAMMPS-style settings |
+| `WriteLmpFF()` | Write the current `Forcefield` to new settings / table files |
+| `resolve_source_table_entries()` | Resolve original table tokens and table names for FM source-table paths |
 
-`ReadLmpFF()` 当前有两个关键约定：
+`ReadLmpFF()` has two important conventions:
 
-- 若传入 `topology_arrays`，bond/angle type id 会被还原成规范 `InteractionKey`
-- `table` 样式不会直接保留原始 table，而是按 `table_fit` 拟合成 runtime potential
+- if `topology_arrays` is provided, bond/angle type ids are restored to canonical `InteractionKey` values
+- `table` styles are not retained as raw tables; they are fitted into runtime potentials according to `table_fit`
 
-`WriteLmpFF()` 的对偶语义是：
+`WriteLmpFF()` is the corresponding write side:
 
-- 对非 table 项直接回填参数
-- 对 table 项重新生成 table 文件
+- non-table terms are written by filling parameters back into settings
+- table terms regenerate table files
 
-因此它是 workflow 导出 runtime forcefield bundle 的规范写口。
+It is therefore the canonical output path for workflow-exported runtime forcefield bundles.
 
 ---
 
-## 坐标构建与 `.data` 写出
+## Coordinate Construction and `.data` Writing
 
-这部分最重要的高层入口是：
+Important high-level entry points:
 
-| 函数 | 作用 |
+| Function | Purpose |
 |---|---|
-| `build_CG_coords()` | 从 AA 坐标 + mapping 构建 CG beads，并可选写 `.gro` / `.pdb` / `.data` |
-| `write_lammps_data()` | 写带可选 bonds / angles / dihedrals 的 LAMMPS data 文件 |
-| `write_gro()` / `write_pdb()` | 轻量结构文件写出 |
+| `build_CG_coords()` | Build CG beads from AA coordinates and mapping, optionally writing `.gro`, `.pdb`, or `.data` |
+| `write_lammps_data()` | Write LAMMPS data files with optional bonds / angles / dihedrals |
+| `write_gro()` / `write_pdb()` | Lightweight structure-file writing |
 
-`build_CG_coords()` 负责：
+`build_CG_coords()` handles:
 
-- 读取 YAML mapping 或内存 mapping dict
-- 做 mapping sanity check
-- 通过 AA topology / trajectory 计算 bead 位置和质量
-- 按 `outputs={...}` 决定是否立即写文件
+- reading YAML mapping or an in-memory mapping dict
+- mapping sanity checks
+- bead position and mass calculation from AA topology / trajectory
+- deciding whether to write files through `outputs={...}`
 
-`write_lammps_data()` 则是更底层的 writer，当前已经支持：
+`write_lammps_data()` is the lower-level writer. It currently supports:
 
-- `atomic` / `full` atom style
-- 可选 bonds / angles / dihedrals 及其 type ids
-- triclinic box
-- image flags 和 wrapped coordinates
+- `atomic` / `full` atom styles
+- optional bonds / angles / dihedrals and their type ids
+- triclinic boxes
+- image flags and wrapped coordinates
 
-当你已经有坐标、type ids 和拓扑数组时，应直接调用 `write_lammps_data()`；
-当你还在做 AA→CG 映射时，用 `build_CG_coords()` 更合适。
+When coordinates, type ids, and topology arrays are already available, call `write_lammps_data()` directly. When performing AA-to-CG mapping, use `build_CG_coords()`.
 
 ---
 
 ## Table I/O
 
-`io/tables.py` 同时服务于 forcefield 读写、FM table 导出和表文件比较。
+`io/tables.py` supports forcefield I/O, FM table export, and table-file comparison.
 
-最重要的函数：
+Important functions:
 
-| 函数 | 作用 |
+| Function | Purpose |
 |---|---|
-| `parse_lammps_table()` | 低层 table parser |
-| `write_lammps_table()` | 低层 table writer |
-| `build_forcefield_tables()` | 从 FM runtime spec + `Forcefield` 生成内存 payload |
-| `export_tables()` | 把整套 FM tables 写到目录并返回 manifest |
-| `compare_table_files()` | 比较参考 table 和候选 table 的差异 |
-| `cap_table_forces()` | 对 table force 做硬上限裁剪 |
+| `parse_lammps_table()` | Low-level table parser |
+| `write_lammps_table()` | Low-level table writer |
+| `build_forcefield_tables()` | Build in-memory payload from FM runtime spec plus `Forcefield` |
+| `export_tables()` | Write a full FM table set to a directory and return a manifest |
+| `compare_table_files()` | Compare reference and candidate table files |
+| `cap_table_forces()` | Apply a hard cap to table forces |
 
-对于 workflow 层，真正的高层入口通常是 `export_tables()`；
-`parse_lammps_table()` / `write_lammps_table()` 更多是底层 building block。
+For workflow code, the usual high-level entry point is `export_tables()`. `parse_lammps_table()` and `write_lammps_table()` are lower-level building blocks.
 
 ---
 
 ## Logger
 
-`io/logger.py` 很薄，但几乎所有 workflow / scheduler / compute 入口都会用到它。
+`io/logger.py` is intentionally thin, but almost every workflow / scheduler / compute entry point uses it.
 
-最常用的符号：
+Common symbols:
 
-| 符号 | 作用 |
+| Symbol | Purpose |
 |---|---|
-| `get_screen_logger(name)` | 获取模块级 `ScreenLogger` |
-| `format_screen_message(...)` | 统一消息格式 |
-| `user_timestamp()` | 用户可读时间戳 |
+| `get_screen_logger(name)` | Get a module-level `ScreenLogger` |
+| `format_screen_message(...)` | Format messages consistently |
+| `user_timestamp()` | User-readable timestamp |
 
-这层只负责轻量控制台日志，不负责结构化事件采集或文件日志轮转。
+This layer only handles lightweight console logging. It does not own structured event collection or file-log rotation.
 
 ---
 
-## 使用规则
+## Usage Rules
 
-为了保持 IO 层稳定，开发时优先遵循这几个规则：
+To keep the I/O layer stable, follow these rules:
 
-1. one-pass runtime 优先使用 `iter_frames()`，不要在 workflow 里重新实现逐帧读取。
-2. runtime forcefield 导出优先使用 `WriteLmpFF()`，不要手工拼 LAMMPS settings。
-3. FM table 导出优先使用 `export_tables()`，保持 manifest 和文件名约定一致。
-4. VP-specific 的 `latent.settings` / VP table builder 继续留在 [10_vp_grower.md](10_vp_grower.md) 那条独立管线里。
+1. Prefer `iter_frames()` for one-pass runtime code; do not reimplement per-frame reading in workflows.
+2. Prefer `WriteLmpFF()` for runtime forcefield export; do not hand-build LAMMPS settings in workflows.
+3. Prefer `export_tables()` for FM table export so manifest and filename conventions stay consistent.
+4. Keep VP-specific `latent.settings` and VP table builders in the separate [10_vp_grower.md](10_vp_grower.md) pipeline.

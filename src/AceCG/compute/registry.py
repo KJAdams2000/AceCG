@@ -8,7 +8,20 @@ from .mpi_engine import MPIComputeEngine
 
 
 def build_default_engine(*, comm=None) -> MPIComputeEngine:
-    """Create and populate the default MPIComputeEngine with core functions."""
+    """Create the default MPI compute engine.
+
+    Parameters
+    ----------
+    comm : object, optional
+        MPI communicator to pass to :class:`MPIComputeEngine`. ``None`` lets the
+        engine use its default communicator behavior.
+
+    Returns
+    -------
+    MPIComputeEngine
+        Engine pre-registered with energy, energy-gradient, energy-Hessian,
+        force, force-gradient, and force-matching statistics functions.
+    """
     engine = MPIComputeEngine(serial_threshold=10, comm=comm)
 
     # --- Energy-side registrations ---

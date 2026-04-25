@@ -130,6 +130,7 @@ class TaskResult:
 
     @property
     def ok(self) -> bool:
+        """Return ``True`` if the task exited with return code zero."""
         return self.returncode == 0
 
 
@@ -145,6 +146,7 @@ class IterationResult:
 
     @property
     def n_total(self) -> int:
+        """Return the total number of task results in this iteration."""
         return len(self.results)
 
 

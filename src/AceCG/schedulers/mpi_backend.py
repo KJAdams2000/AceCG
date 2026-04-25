@@ -44,6 +44,7 @@ class HostSlice:
 
     @property
     def n_cpus(self) -> int:
+        """Return the number of CPU cores in this host slice."""
         return len(self.cpu_ids)
 
 
@@ -60,6 +61,7 @@ class Placement:
 
     @property
     def single_host(self) -> bool:
+        """Return ``True`` when the placement uses exactly one host."""
         return len(self.slices) == 1
 
     @classmethod
@@ -272,6 +274,7 @@ class IntelMpiBackend(MpiBackend):
         payload_cmd: list[str],
         run_dir: Path,
     ) -> LaunchSpec:
+        """Build the Intel MPI launch command for a placement."""
         if _is_local(placement):
             return self._realize_local(placement, payload_cmd)
         if os.environ.get("SLURM_JOB_ID"):
@@ -468,6 +471,7 @@ class OpenMpiBackend(MpiBackend):
         payload_cmd: list[str],
         run_dir: Path,
     ) -> LaunchSpec:
+        """Build the OpenMPI launch command for a placement."""
         if _is_local(placement):
             return self._realize_local(placement, payload_cmd)
         if os.environ.get("SLURM_JOB_ID"):
@@ -608,6 +612,7 @@ class MpichBackend(MpiBackend):
         payload_cmd: list[str],
         run_dir: Path,
     ) -> LaunchSpec:
+        """Build the MPICH launch command for a placement."""
         if _is_local(placement):
             return self._realize_local(placement, payload_cmd)
         if os.environ.get("SLURM_JOB_ID"):
@@ -737,6 +742,7 @@ class LocalMpirunBackend(MpiBackend):
         payload_cmd: list[str],
         run_dir: Path,
     ) -> LaunchSpec:
+        """Build a single-host generic ``mpirun`` launch command."""
         if not placement.single_host:
             raise RuntimeError(
                 f"LocalMpirunBackend does not support multi-host placements "

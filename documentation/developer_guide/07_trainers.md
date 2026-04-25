@@ -1,114 +1,111 @@
-# 07 Trainer 模块开发者参考
+# 07 Trainer Module Developer Reference
 
-*Updated: 2026-04-23.*
+*Updated: 2026-04-25.*
 
-Trainer 层位于 `compute/` 之上，与 `solvers/` 同层。
-它消耗 workflow 预构建的 batch 统计量，产出梯度、Hessian、更新步和诊断信息。
-**不拥有** MPI 执行、trajectory 提取、或 reducer runtime 状态。
+The trainer layer sits above `compute/` and next to `solvers/`. It consumes workflow-built batch statistics and produces gradients, Hessians, update steps, and diagnostics. It does not own MPI execution, trajectory extraction, or reducer runtime state.
 
 ---
 
-## 核心模块
+## Core Modules
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `trainers/base.py` | `BaseTrainer`，共享 trainer 合同 |
-| `trainers/analytic/rem.py` | REM trainer + batch schema |
-| `trainers/analytic/mse.py` | PMF-matching MSE trainer（基于 REM 能量统计）|
-| `trainers/analytic/fm.py` | 迭代 FM trainer，消耗标准 FM reducer payload |
-| `trainers/analytic/cdrem.py` | 潜变量 CDREM trainer |
-| `trainers/analytic/cdfm.py` | CDFM 梯度消耗器，含 EM guardrail 处理 |
-| `trainers/analytic/multi.py` | 组合多个子 trainer 的 meta-trainer |
-| `trainers/autodiff/` | 未来 autodiff trainer 的占位 package |
+| `trainers/base.py` | `BaseTrainer`, shared trainer contract |
+| `trainers/analytic/rem.py` | REM trainer and batch schema |
+| `trainers/analytic/mse.py` | PMF-matching MSE trainer based on PMFs, bin assignments, and per-frame energy gradients |
+| `trainers/analytic/fm.py` | Iterative FM trainer consuming the standard FM reducer payload |
+| `trainers/analytic/cdrem.py` | Latent-variable CDREM trainer |
+| `trainers/analytic/cdfm.py` | CDFM gradient consumer with EM guardrail handling |
+| `trainers/analytic/multi.py` | Meta-trainer that combines multiple child trainers |
+| `trainers/autodiff/` | Placeholder package for future autodiff trainers |
 
-`AceCG.trainers` 目前只重新导出 analytic trainers。
+`AceCG.trainers` currently re-exports analytic trainers only.
 
 ---
 
-## 层边界
+## Layer Boundaries
 
-```
+```text
 topology + compute
-  → Forcefield-owned masks、reducer 输出、workflow 构建的 batch
+  -> Forcefield-owned masks, reducer outputs, workflow-built batches
 
 trainer
-  → 消耗一个 batch，计算 grad/update，mutate 自己的 Forcefield + optimizer
+  -> consumes one batch, computes grad/update, mutates its own Forcefield + optimizer
 
 workflow
-  → 决定构建哪个 batch、何时调用 trainer.step()、如何记录日志
+  -> decides which batch to build, when to call trainer.step(), and how to log
 ```
 
-**Trainer 应该拥有**：
+A trainer should own:
 
-- 一个私有 `Forcefield` 副本
-- 一个私有 optimizer 实例
-- batch → 梯度 的数学
-- trainer-local 日志和诊断
+- a private `Forcefield` copy
+- a private optimizer instance
+- batch-to-gradient mathematics
+- trainer-local logs and diagnostics
 
-**Trainer 不应该拥有**：
+A trainer should not own:
 
 - `MPIComputeEngine`
 - `run_post()`
-- trajectory I/O 或 MDAnalysis 对象
-- reducer 侧 accumulation 循环
-- solver 式精确线性求解
+- trajectory I/O or MDAnalysis objects
+- reducer-side accumulation loops
+- solver-style exact linear solves
 
 ---
 
-## `BaseTrainer`（trainers/base.py）
+## `BaseTrainer`
 
-### 职责
+### Responsibilities
 
-| 方法 | 含义 |
+| Method | Meaning |
 |---|---|
-| `__init__(forcefield, optimizer, beta=None, logger=None)` | deep-copy 并拥有一个 `Forcefield` 和 `BaseOptimizer` |
-| `get_params()` | 返回当前全参数向量 |
-| `update_forcefield(L_new)` | 将全参数向量写入 forcefield 和 optimizer |
-| `clamp_and_update()` | 将 bounds 应用到 optimizer 状态，再同步 |
-| `get_param_names()` | 返回有序参数标签 |
-| `get_param_bounds()` | 返回 `(lb, ub)` |
-| `get_interaction_labels()` | 返回 forcefield 顺序的 interaction 标签 |
-| `n_total_params()` | 总标量参数数 |
-| `active_interaction_mask()` | 从 optimizer L2 mask 推导 L1 interaction 活跃性 |
-| `is_optimization_linear()` | 报告是否所有活跃通道都是线性的 |
-| `optimizer_accepts_hessian()` | 基于签名判断 optimizer 是否接受 Hessian |
-| `step(batch, apply_update=True)` | 抽象的单步 trainer 入口 |
+| `__init__(forcefield, optimizer, beta=None, logger=None)` | Deep-copy and own a `Forcefield` and `BaseOptimizer` |
+| `get_params()` | Return the current full parameter vector |
+| `update_forcefield(L_new)` | Write a full parameter vector into forcefield and optimizer |
+| `clamp_and_update()` | Apply bounds to optimizer state, then synchronize |
+| `get_param_names()` | Return ordered parameter labels |
+| `get_param_bounds()` | Return `(lb, ub)` |
+| `get_interaction_labels()` | Return interaction labels in forcefield order |
+| `n_total_params()` | Total scalar parameter count |
+| `active_interaction_mask()` | Derive the L1 interaction activity mask from the optimizer's L2 mask |
+| `is_optimization_linear()` | Report whether all active channels are linear |
+| `optimizer_accepts_hessian()` | Use the optimizer signature to determine whether Hessians are accepted |
+| `step(batch, apply_update=True)` | Abstract single-step trainer entry point |
 
-### Batch 合同
+### Batch Contract
 
-每个 concrete trainer 都是 batch-driven：
+Every concrete trainer is batch-driven:
 
 ```python
 out = trainer.step(batch, apply_update=True)
 ```
 
-Workflow 拥有 batch 构建。**Trainer 不应重建 trajectory 状态或自行补算缺失的帧统计。**
+The workflow owns batch construction. Trainers should not rebuild trajectory state or recompute missing frame statistics on their own.
 
-### Hessian 合同
+### Hessian Contract
 
-`BaseTrainer.optimizer_accepts_hessian()` 检查 optimizer 的 `step()` 签名中是否有名为 `hessian` 的参数。
-因此 optimizer 作者若要支持二阶信息，**必须**用精确名称 `hessian`。
+`BaseTrainer.optimizer_accepts_hessian()` checks whether the optimizer's `step()` signature has a parameter named `hessian`. Optimizer authors who want second-order information must use that exact parameter name.
 
 ---
 
-## 公开 Trainer 接口
+## Public Trainer Interface
 
-`AceCG.trainers` 导出：
+`AceCG.trainers` exports:
 
-| 符号 | 含义 |
+| Symbol | Meaning |
 |---|---|
 | `REMTrainerAnalytic`, `REMBatch`, `REMOut` | REM trainer |
 | `MSETrainerAnalytic`, `MSEBatch`, `MSEOut` | MSE / PMF-matching trainer |
-| `FMTrainerAnalytic`, `FMBatch` | 迭代 FM trainer |
-| `CDREMTrainerAnalytic`, `CDREMBatch`, `CDREMOut` | 潜变量 REM trainer |
-| `CDFMTrainerAnalytic`, `CDFMBatch` | 潜变量 FM trainer |
-| `MultiTrainerAnalytic`, `MultiOut` | 组合 meta-trainer |
+| `FMTrainerAnalytic`, `FMBatch` | Iterative FM trainer |
+| `CDREMTrainerAnalytic`, `CDREMBatch`, `CDREMOut` | Latent-variable REM trainer |
+| `CDFMTrainerAnalytic`, `CDFMBatch` | Latent-variable FM trainer |
+| `MultiTrainerAnalytic`, `MultiOut` | Composite meta-trainer |
 
-推荐用法：
+Recommended usage:
 
-- workflow 调用 `TrainerClass.make_batch(...)` 或等效 batch helper
-- workflow 把 batch 传入 `trainer.step(...)`
-- trainer 内部不创建 compute engine、不调用 `run_post()`、不跑 reducer
+- workflows call `TrainerClass.make_batch(...)` or an equivalent batch helper
+- workflows pass the batch to `trainer.step(...)`
+- trainers do not create compute engines, call `run_post()`, or run reducers
 
 ---
 
@@ -116,115 +113,173 @@ Workflow 拥有 batch 构建。**Trainer 不应重建 trajectory 状态或自行
 
 ### `REMTrainerAnalytic`
 
-消耗 REM 能量统计，计算：
+Consumes REM energy statistics and computes:
 
 $$\nabla = \beta \left(\langle dU / d\lambda \rangle_{\text{AA}} - \langle dU / d\lambda \rangle_{\text{CG}}\right)$$
 
-AA 侧统计来自 workflow 构建的 batch（`run_post(step_mode="rem")`的 pickle 输出）。
-当 optimizer 接受 Hessian 时，REM 也消耗二阶统计。
+AA-side statistics come from workflow-built batches, usually pickle output from `run_post(step_mode="rem")`. When the optimizer accepts Hessians, REM also consumes second-order statistics.
 
 ### `FMTrainerAnalytic`
 
-消耗标准 FM reducer payload：
+Consumes the standard FM reducer payload:
 
-| Key | 含义 |
+| Key | Meaning |
 |---|---|
-| `JtJ` | 归一化加权平均 $J_i^T J_i$ |
-| `Jty` | 归一化加权平均 $J_i^T y_i$ |
-| `y_sumsq` | 归一化加权平均 $y_i^T y_i$ |
-| `Jtf` | 归一化加权平均 $J_i^T f_i$ |
-| `f_sumsq` | 归一化加权平均 $f_i^T f_i$ |
-| `fty` | 归一化加权平均 $f_i^T y_i$ |
-| `nframe` | 贡献帧数 |
+| `JtJ` | Normalized weighted average `J_i^T J_i` |
+| `Jty` | Normalized weighted average `J_i^T y_i` |
+| `y_sumsq` | Normalized weighted average `y_i^T y_i` |
+| `Jtf` | Normalized weighted average `J_i^T f_i` |
+| `f_sumsq` | Normalized weighted average `f_i^T f_i` |
+| `fty` | Normalized weighted average `f_i^T y_i` |
+| `nframe` | Number of contributing frames |
 
-计算：
+Computes:
 
-$$L = \frac{1}{2}\left(f\_\text{sumsq} - 2\,fty + y\_\text{sumsq}\right)$$
+$$L = \frac{1}{2}\left(f_\text{sumsq} - 2\,fty + y_\text{sumsq}\right)$$
+
 $$\nabla = Jtf - Jty,\quad H \approx JtJ$$
 
-这是**迭代 FM 路径**。精确闭合求解在 `FMMatrixSolver`，不在 trainer。
+This is the iterative FM path. Exact closed-form solving lives in `FMMatrixSolver`, not in the trainer.
 
-FM stats 由 `run_post(spec, step_mode="fm")` 生成（pickle 输出），workflow 读取后构建 batch。
+FM statistics are generated by `run_post(spec, step_mode="fm")`; the workflow reads the pickle output and builds a batch.
 
 ### `MSETrainerAnalytic`
 
-消耗 PMF + REM 能量梯度统计，构建 gauge-fixed PMF 误配梯度。
-使用：
+Consumes AA/CG PMFs, CG frame-to-bin assignments, and per-frame CG energy gradients to build a gauge-fixed PMF-matching objective. It no longer relies on the old pair-distance derivative path. The `CG` field in `MSEBatch` is retained only for compatibility with older type signatures; the recommended and currently used input path is `energy_grad_frame`.
+
+Let `s` denote a PMF bin, `F_AA(s)` the reference PMF, and `F_CG(s)` the current CG PMF. Because PMFs are defined only up to an arbitrary additive constant, the trainer first computes a gauge shift:
+
+$$c = \frac{1}{N_\text{bin}} \sum_s \left(F_\text{CG}(s) - F_\text{AA}(s)\right)$$
+
+Then it defines the gauge-fixed mismatch:
+
+$$\Delta F(s) = F_\text{CG}(s) - c - F_\text{AA}(s)$$
+
+The objective is:
+
+$$L_\text{MSE} = \frac{1}{2} \sum_s \Delta F(s)^2$$
+
+The derivative of the CG PMF is estimated from conditional energy gradients:
 
 $$\partial F_{\text{CG}}(s)/\partial \lambda = \langle dU/d\lambda \rangle_{\text{CG}|s} - \langle dU/d\lambda \rangle_{\text{CG}}$$
 
-然后对各 bin 累积 PMF 误配梯度。
+After gauge fixing, $\sum_s \Delta F(s)=0$, so the global ensemble-average term cancels for the full bin sum. The current implementation accumulates the conditional-mean term over observed bins:
 
-**已知问题**：当 workflow 提供非均匀帧权重给 REM reducer 时，
-全局均值和条件均值会不一致（未来需修复：在 `MSEBatch` 加入 `frame_weight`）。
+$$\nabla_\lambda L_\text{MSE}
+  = \sum_{s \in \mathcal{S}_\text{obs}}
+      \Delta F(s)\,\langle dU/d\lambda \rangle_{\text{CG}|s}$$
+
+Here $\mathcal{S}_\text{obs}$ is the set of bins with at least one positive-weight CG frame. Empty bins still contribute to loss and the gauge shift, but not to the gradient, because their conditional averages cannot be estimated from the current frames.
+
+#### MSE Batch Schema
+
+| Key | Required | Meaning |
+|---|---:|---|
+| `pmf_AA` | yes | Reference PMF, shape `(n_bins,)` |
+| `pmf_CG` | yes | Current CG PMF, shape `(n_bins,)` |
+| `CG_bin_idx_frame` | yes | Bin index for each frame, shape `(n_frames,)`, values in `[0, n_bins)` |
+| `energy_grad_frame` | yes | Per-frame CG energy gradients, shape `(n_frames, n_params)` |
+| `frame_weight` | no | Nonnegative per-frame weights, shape `(n_frames,)`; uniform weights are used if omitted |
+| `step_index` | no | Logging step, default `0` |
+
+Conditional means are computed as:
+
+$$
+\langle dU/d\lambda \rangle_{\text{CG}|s}
+=
+\frac{\sum_{i: b_i=s} w_i\,g_i}{\sum_{i: b_i=s} w_i}
+$$
+
+where `b_i = CG_bin_idx_frame[i]` and `g_i = energy_grad_frame[i]`. If `frame_weight` is not provided, all `w_i = 1`. Weights must be nonnegative, and their total sum must be positive and finite.
+
+#### MSE Usage
+
+Workflows should build batches with `make_batch()`:
+
+```python
+batch = MSETrainerAnalytic.make_batch(
+    pmf_AA=pmf_ref,
+    pmf_CG=pmf_model,
+    CG_bin_idx_frame=bin_idx_frame,
+    energy_grad_frame=energy_grad_frame,
+    frame_weight=frame_weight,      # optional
+    step_index=iteration_index,
+)
+out = trainer.step(batch, apply_update=True)
+```
+
+`step()` returns the standard trainer output:
+
+| Key | Meaning |
+|---|---|
+| `name` | Always `"MSE"` |
+| `loss` | Gauge-fixed PMF mismatch objective |
+| `grad` | MSE gradient, shape `(n_params,)` |
+| `hessian` | Currently `None`; retained for interface uniformity |
+| `update` | Optimizer-returned parameter update; `zeros_like(grad)` in dry-run mode |
+| `meta` | Includes `gauge_shift`, `frame_weight_source`, `n_observed_bins`, `missing_bins`, `grad_norm`, and `update_norm` |
+
+Use `apply_update=False` for dry runs, meta-trainers, or gradient debugging. In that mode the optimizer is not called and the trainer's forcefield is not mutated.
 
 ### `CDREMTrainerAnalytic`
 
-消耗潜变量条件和联合导数统计，计算 CDREM 梯度和可选 Hessian。
+Consumes latent-variable conditional and joint derivative statistics, then computes CDREM gradients and optional Hessians.
 
 ### `CDFMTrainerAnalytic`
 
-消耗 by-`x` batch 数组：
+Consumes by-`x` batch arrays:
 
 - `grad_direct_by_x`
 - `grad_reinforce_by_x`
 - `sse_by_x`
 - `n_samples_by_x`
 - `obs_rows`
-- 可选 `x_weight`
+- optional `x_weight`
 - `mode`
 
-在 `step()` 内部对各 `x` 做 tally，然后应用 guardrail、REINFORCE clipping、mask 和 optimizer step。
-**不自行构建 trajectory 统计。**
+Inside `step()`, it tallies over `x`, applies guardrails, REINFORCE clipping, masks, and optimizer stepping. It does not build trajectory statistics on its own.
 
-#### CDFM 数据通道
+#### CDFM Data Channels
 
-CDFM 不再使用 `cdfm_y_eff` 预处理 step。每个 zbx replica 在 `.acg` 里通过
-两个配对的 glob 模式声明：
+CDFM no longer uses a `cdfm_y_eff` preprocessing step. Each zbx replica declares two paired glob patterns in `.acg`:
 
 ```ini
 [conditioning]
 init_config_pool = conditioning/frame_*.data
 init_force_pool  = conditioning/frame_*.forces.npy
-# 默认 True：CDFM 梯度更新只驱动 VP 项，CG-only 参数被冻结
 mask_cg_only     = true
 ```
 
-两个 pool 的帧 id 必须一一匹配；`init_force_pool` 的文件名通过
-`AceCG.configs.utils.extract_frame_id_from_force_file()` 提取数字 id，
-多个数字 run 必须完全一致（如 `frame_000035.forces.npy` 或 `frame_35_rep35.npy`）。
+The two pools must match one-to-one by frame id. `init_force_pool` frame ids are extracted by `AceCG.configs.utils.extract_frame_id_from_force_file()`. If a filename contains multiple numbers, they must all agree, such as `frame_000035.forces.npy` or `frame_35_rep35.npy`.
 
-`CDFMWorkflow` 在 `__init__` 阶段根据 `mask_cg_only` 调用
-`forcefield.build_mask(init_mask=init_mask)`：当 `True` 时将当前 mask 与
-`~real_mask` 做 AND 合成，把所有 CG-only（非 VP）项冻结；`False` 时保留
-现有 mask，允许 CG-only 通道参与 CDFM 梯度更新。对 CG-only 力基线 \
-`f_theta_cg_only(R_init)` 的评估由 `run_post()` 的 cdfm_zbx 预处理块\
-独立处理（临时 swap 到 `real_mask`，计算完成后恢复），不受 `mask_cg_only` 影响。
+During `CDFMWorkflow.__init__`, `_install_cdfm_mask()` calls `forcefield.build_mask(init_mask=init_mask)` according to `mask_cg_only`. When `True`, the current mask is ANDed with `~real_mask`, freezing all CG-only, non-VP terms. When `False`, the existing mask is preserved and CG-only channels may participate in CDFM gradient updates.
+
+The CG-only force baseline `f_theta_cg_only(R_init)` is evaluated by the `cdfm_zbx` preprocessing block in `run_post()` by temporarily swapping to `real_mask` and restoring the mask afterward. It is not affected by `mask_cg_only`.
 
 ### `MultiTrainerAnalytic`
 
-在 trainer 层组合多个子 trainer。两种模式：
+Combines multiple child trainers at the trainer layer. Two modes exist:
 
-| Mode | 含义 |
+| Mode | Meaning |
 |---|---|
-| `update` | 每个子 trainer 独立 update；meta-trainer 合并更新 |
-| `grad` | 每个子 trainer dry-run 返回 grad/Hessian；meta-trainer 统一 optimizer step |
+| `update` | Each child trainer updates independently; the meta-trainer combines updates |
+| `grad` | Each child trainer dry-runs and returns grad/Hessian; the meta-trainer performs one optimizer step |
 
-`MultiTrainerAnalytic` 不是 compute 共享对象。共享 reducer 工作和 cache 复用必须在下层（workflow / compute）解决。
+`MultiTrainerAnalytic` is not a shared compute object. Shared reducer work and cache reuse must be handled below it, in workflow or compute.
 
 ---
 
-## Workflow 合同
+## Workflow Contract
 
-Workflow 负责：
+Workflows are responsible for:
 
-1. 选择使用哪个 trainer
-2. 构建正确的 batch dict
-3. 调用 `trainer.step(batch, apply_update=...)`
-4. 决定是否切换到 solver 模式
-5. 日志和 checkpoint 策略
+1. selecting which trainer to use
+2. building the correct batch dict
+3. calling `trainer.step(batch, apply_update=...)`
+4. deciding whether to switch to solver mode
+5. logging and checkpoint policy
 
-最小调用模式（FM 示例）：
+Minimal FM call pattern:
 
 ```python
 batch = FMTrainerAnalytic.make_batch(
@@ -240,4 +295,4 @@ batch = FMTrainerAnalytic.make_batch(
 out = trainer.step(batch, apply_update=True)
 ```
 
-这里 `stats` 是从 `run_post(spec)` 输出的 pickle 文件中读取的。
+Here `stats` is read from the pickle output of `run_post(spec)`.

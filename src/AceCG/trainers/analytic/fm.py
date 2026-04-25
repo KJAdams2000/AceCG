@@ -112,6 +112,14 @@ class FMTrainerAnalytic(BaseTrainer):
         return {"batch": cls.BATCH_SCHEMA, "return": cls.RETURN_SCHEMA}
 
     def get_offsets(self) -> List[slice]:
+        """Return parameter slices for each interaction in the forcefield.
+
+        Returns
+        -------
+        list[slice]
+            Slices into the global parameter vector, ordered like the owned
+            forcefield interactions.
+        """
         return self.forcefield.interaction_offsets()
 
     @staticmethod
@@ -126,7 +134,32 @@ class FMTrainerAnalytic(BaseTrainer):
         nframe: int,
         step_index: int = 0,
     ) -> FMBatch:
-        """Build an FMBatch from pre-accumulated statistics."""
+        """Build an FM batch from pre-accumulated statistics.
+
+        Parameters
+        ----------
+        JtJ : array-like, shape (n_params, n_params)
+            Normalized force-matching normal matrix.
+        Jty : array-like, shape (n_params,)
+            Normalized right-hand side from target forces.
+        y_sumsq : float
+            Normalized squared norm of target forces.
+        Jtf : array-like, shape (n_params,)
+            Normalized ``J.T @ f_model`` term for the current model forces.
+        f_sumsq : float
+            Normalized squared norm of current model forces.
+        fty : float
+            Normalized dot product between model and target forces.
+        nframe : int
+            Number of frames contributing to the statistics.
+        step_index : int, default=0
+            Iteration index used for logging.
+
+        Returns
+        -------
+        FMBatch
+            Batch dictionary with NumPy arrays and scalar diagnostics.
+        """
         return FMBatch(
             JtJ=np.asarray(JtJ, dtype=np.float64),
             Jty=np.asarray(Jty, dtype=np.float64),
@@ -199,9 +232,19 @@ class FMTrainerAnalytic(BaseTrainer):
         Parameters
         ----------
         batch : FMBatch
-            Must contain normalized ``JtJ``, ``Jty``, ``y_sumsq``, ``nframe``.
-        apply_update : bool
-            If True, update parameters via the optimizer.
+            Batch returned by :meth:`make_batch` or an equivalent dictionary.
+            It must contain normalized ``JtJ``, ``Jty``, ``y_sumsq``, ``Jtf``,
+            ``f_sumsq``, ``fty``, and ``nframe``.
+        apply_update : bool, default=True
+            If ``True``, update parameters through the configured optimizer.
+            If ``False``, return zero ``update`` while still computing loss and
+            gradients.
+
+        Returns
+        -------
+        FMOut
+            Dictionary with scalar force-matching loss, masked gradient,
+            optional Hessian, optimizer update, and diagnostics.
         """
         JtJ = np.asarray(batch["JtJ"], dtype=np.float64)
         Jty = np.asarray(batch["Jty"], dtype=np.float64)
@@ -215,6 +258,8 @@ class FMTrainerAnalytic(BaseTrainer):
         if nframe <= 0:
             raise ValueError("nframe must be positive.")
         
+        # Nonlinear potentials require the current-model force term Jtf; for a
+        # linear model this reduces to the usual normal-equation gradient.
         grad = np.asarray(Jtf, dtype=np.float64) - np.asarray(Jty, dtype=np.float64)
         loss = 0.5 * (float(f_sumsq) - 2.0 * float(fty) + float(y_sumsq))
         hessian_full = np.asarray(JtJ, dtype=np.float64)

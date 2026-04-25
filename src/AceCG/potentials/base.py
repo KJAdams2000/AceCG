@@ -27,7 +27,17 @@ def IteratePotentials(
 
 
 class BasePotential(ABC):
+    """Abstract interface implemented by all AceCG potential functions.
+
+    Subclasses store their optimizable parameters in ``self._params`` and
+    expose derivative method names through ``_dparam_names`` and
+    ``_d2param_names``. Trainers use this common interface to assemble energy
+    gradients, force Jacobians, and parameter metadata without knowing the
+    analytic form of each potential.
+    """
+
     def __init__(self):
+        """Initialize shared metadata slots for a potential subclass."""
         self._params = None
         self._param_names = None
         self._dparam_names = None
@@ -38,27 +48,68 @@ class BasePotential(ABC):
 
     @abstractmethod
     def value(self, r: np.ndarray) -> np.ndarray:
-        """Compute potential energy at given distances r."""
+        """Compute potential energy at coordinates or distances.
+
+        Parameters
+        ----------
+        r : np.ndarray
+            Array-like coordinates for the interaction, usually pair distances
+            for pair potentials or scalar bond/angle values for bonded terms.
+
+        Returns
+        -------
+        np.ndarray
+            Potential energy evaluated elementwise at ``r``.
+        """
         pass
 
     @abstractmethod
     def force(self, r: np.ndarray) -> np.ndarray:
-        """Compute force (negative gradient of potential) at given distances r."""
+        """Compute scalar force ``-dU/dr`` at coordinates or distances.
+
+        Parameters
+        ----------
+        r : np.ndarray
+            Array-like coordinates matching the convention of :meth:`value`.
+
+        Returns
+        -------
+        np.ndarray
+            Force values with the same broadcast shape as ``r``.
+        """
         pass
 
     # Common method
     def param_names(self) -> List[str]:
-        """Parameter names of this potential depends on."""
+        """Return ordered names for optimizable parameters.
+
+        Returns
+        -------
+        list[str]
+            Names ordered exactly like :meth:`get_params`.
+        """
         assert self._param_names is not None
         return self._param_names
     
     def dparam_names(self) -> List[str]:
-        """Return a List of first derivative method names (used in energy_grad)."""
+        """Return first-derivative method names used by :meth:`energy_grad`.
+
+        Returns
+        -------
+        list[str]
+            Method names whose callables evaluate ``dU/dtheta_i``.
+        """
         assert self._dparam_names is not None
         return self._dparam_names
     
     def d2param_names(self) -> List[List[str]]:
-        """Return a 2D List of second derivative method names (for Hessian)."""
+        """Return second-derivative method names used for Hessian assembly.
+
+        Returns
+        -------
+        list[list[str]]
+            Square matrix of method names for ``d2U/dtheta_i dtheta_j``.
+        """
         assert self._d2param_names is not None
         return self._d2param_names
 
@@ -76,17 +127,29 @@ class BasePotential(ABC):
         return self._d2param_dr_names
     
     def n_params(self) -> int:
-        """Number of parameters this potential depends on."""
+        """Return the number of optimizable parameters in this potential."""
         assert self._params is not None
         return len(self._params)
 
     def get_params(self) -> np.ndarray:
-        """Return current parameter values as 1D array."""
+        """Return current parameter values.
+
+        Returns
+        -------
+        np.ndarray
+            One-dimensional copy of the potential parameter vector.
+        """
         assert self._params is not None
         return self._params.copy()
 
     def set_params(self, new_params: np.ndarray):
-        """Update parameters with new values."""
+        """Replace the potential parameter vector.
+
+        Parameters
+        ----------
+        new_params : np.ndarray
+            New parameter values ordered like :meth:`param_names`.
+        """
         # if self._params is not None:
         #     assert len(new_params) == len(self._params)
         self._params = new_params.copy()

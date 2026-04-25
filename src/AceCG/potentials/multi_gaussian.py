@@ -39,6 +39,22 @@ class MultiGaussianPotential(BasePotential):
         *,
         sigma_floor: float = 1e-8
     ):
+        """Initialize a sum of normalized Gaussian components.
+
+        Parameters
+        ----------
+        typ1, typ2 : str
+            Pair type labels.
+        n_gauss : int
+            Number of Gaussian components.
+        cutoff : float, default=np.inf
+            Optional pair cutoff. Values beyond the cutoff are zeroed.
+        init_params : np.ndarray, optional
+            Flat parameter vector ordered ``[A0, r0_0, sigma_0, A1, ...]``.
+            If omitted, amplitudes and centers start at zero and sigmas at one.
+        sigma_floor : float, default=1e-8
+            Minimum allowed sigma used for numerical stability.
+        """
         super().__init__()
         assert n_gauss >= 1
         self.typ1 = typ1
@@ -91,12 +107,15 @@ class MultiGaussianPotential(BasePotential):
     # -------- params as views --------
     @property
     def A(self) -> np.ndarray:
+        """Return a view of Gaussian amplitudes ``A_k``."""
         return self._params[0::3]
     @property
     def r0(self) -> np.ndarray:
+        """Return a view of Gaussian centers ``r0_k``."""
         return self._params[1::3]
     @property
     def sigma(self) -> np.ndarray:
+        """Return a view of Gaussian widths ``sigma_k``."""
         return self._params[2::3]
 
 
@@ -105,6 +124,7 @@ class MultiGaussianPotential(BasePotential):
         np.maximum(self._params[2::3], self._sigma_floor, out=self._params[2::3])
 
     def is_param_linear(self) -> np.ndarray:
+        """Return per-parameter linearity flags for ``[A, r0, sigma]`` blocks."""
         return np.tile(np.array([True, False, False], dtype=bool), self.n_gauss)
 
     # -------- core API (vectorized) --------
@@ -121,6 +141,7 @@ class MultiGaussianPotential(BasePotential):
         return x, phi
 
     def value(self, r: np.ndarray) -> np.ndarray:
+        """Evaluate the summed Gaussian potential energy at ``r``."""
         x, phi = self._xr_phi(r)
         # Σ A/(σ√2π) * φ
         out = (self.A * (1.0 / (self.sigma * SQRT2PI)) * phi).sum(axis=-1)
@@ -129,6 +150,7 @@ class MultiGaussianPotential(BasePotential):
         return out
 
     def force(self, r: np.ndarray) -> np.ndarray:
+        """Evaluate the summed scalar force ``-dU/dr`` at ``r``."""
         # F = -dV/dr = Σ A * x * φ / (σ^3 √2π)
         x, phi = self._xr_phi(r)
         s = self.sigma
@@ -185,6 +207,7 @@ class MultiGaussianPotential(BasePotential):
 
     # -------- zeros for cross-terms --------
     def zero(self, r: np.ndarray) -> np.ndarray:
+        """Return zeros shaped like ``r`` for cross-component second terms."""
         return np.zeros_like(np.asarray(r, dtype=float))
 
     # -------- dynamic derivative dispatch (simplified) --------

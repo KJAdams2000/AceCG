@@ -16,6 +16,30 @@ except ImportError:
 
 
 class CDFMBatch(TypedDict, total=False):
+    """Batch dictionary consumed by :class:`CDFMTrainerAnalytic`.
+
+    Keys
+    ----
+    grad_direct_by_x : array-like, shape (n_x, n_params)
+        Direct force-matching gradient contribution for each conditioned
+        ``x`` replica.
+    grad_reinforce_by_x : array-like, shape (n_x, n_params)
+        REINFORCE/covariance gradient contribution for each conditioned
+        ``x`` replica. It may be all zeros in direct-only workflows.
+    sse_by_x : array-like, shape (n_x,)
+        Sum of squared observed-force errors for each conditioned ``x``.
+    n_samples_by_x : array-like, shape (n_x,)
+        Number of sampled ``z`` configurations contributing to each ``x``.
+    obs_rows : int
+        Number of observed force rows used when reporting RMSE.
+    x_weight : array-like, optional, shape (n_x,)
+        Nonnegative weights for averaging across ``x`` replicas. Weights are
+        normalized internally; uniform weights are used when omitted.
+    mode : {"direct", "reinforce"}
+        Gradient mode requested by the workflow.
+    step_index : int, optional
+        Iteration index used for scalar logging.
+    """
     grad_direct_by_x: Any
     grad_reinforce_by_x: Any
     sse_by_x: Any
@@ -27,6 +51,12 @@ class CDFMBatch(TypedDict, total=False):
 
 
 class CDFMOut(TypedDict, total=False):
+    """Return dictionary produced by :meth:`CDFMTrainerAnalytic.step`.
+
+    Keys include the scalar loss, masked total gradient, separated direct and
+    reinforce gradients, optional Hessian placeholder, optimizer update, and a
+    ``meta`` dictionary with norms, clipping status, and guardrail diagnostics.
+    """
     name: str
     loss: float
     grad: Any
@@ -38,7 +68,23 @@ class CDFMOut(TypedDict, total=False):
 
 
 class CDFMTrainerAnalytic(BaseTrainer):
-    """CDFM trainer that tallies by-x task results and applies one update."""
+    """Analytic conditional force-matching trainer.
+
+    CDFM receives pre-reduced statistics grouped by observed ``x`` replica,
+    averages those groups with optional ``x_weight`` values, applies guardrails
+    for latent-only parameters, and performs one optimizer update.
+
+    Parameters
+    ----------
+    forcefield : Forcefield
+        Forcefield copied and updated by the trainer.
+    optimizer : BaseOptimizer
+        Optimizer whose mask defines trainable global parameter coordinates.
+    beta : float, optional
+        Inverse temperature. Required when ``mode="reinforce"`` is used.
+    logger : object, optional
+        Optional scalar logger exposing ``add_scalar``.
+    """
 
     BATCH_SCHEMA: Dict[str, Any] = {
         "grad_direct_by_x": "required np.ndarray; shape (n_x, n_params)",
@@ -64,9 +110,18 @@ class CDFMTrainerAnalytic(BaseTrainer):
 
     @classmethod
     def schema(cls) -> Dict[str, Any]:
+        """Return human-readable batch and return schemas for CDFM."""
         return {"batch": cls.BATCH_SCHEMA, "return": cls.RETURN_SCHEMA}
 
     def get_offsets(self) -> List[slice]:
+        """Return global parameter slices for each forcefield interaction.
+
+        Returns
+        -------
+        list[slice]
+            One slice per interaction, ordered like the forcefield. Each slice
+            selects that interaction's parameters inside the global vector.
+        """
         return self.forcefield.interaction_offsets()
 
     @staticmethod
@@ -81,6 +136,32 @@ class CDFMTrainerAnalytic(BaseTrainer):
         mode: str = "direct",
         step_index: int = 0,
     ) -> CDFMBatch:
+        """Create a validated CDFM batch dictionary from array-like inputs.
+
+        Parameters
+        ----------
+        grad_direct_by_x : array-like, shape (n_x, n_params)
+            Direct gradient contribution for each conditioned ``x`` replica.
+        grad_reinforce_by_x : array-like, shape (n_x, n_params)
+            REINFORCE/covariance gradient contribution for each ``x``.
+        sse_by_x : array-like, shape (n_x,)
+            Sum of squared observed-force errors per ``x``.
+        n_samples_by_x : array-like, shape (n_x,)
+            Number of sampled latent configurations per ``x``.
+        obs_rows : int
+            Number of observed force rows used to compute RMSE diagnostics.
+        x_weight : array-like, optional, shape (n_x,)
+            Nonnegative replica weights. They are normalized in :meth:`step`.
+        mode : {"direct", "reinforce"}, default="direct"
+            CDFM gradient mode.
+        step_index : int, default=0
+            Iteration index used for logging.
+
+        Returns
+        -------
+        CDFMBatch
+            Dictionary with NumPy arrays in the expected dtypes.
+        """
         batch: CDFMBatch = {
             "grad_direct_by_x": np.asarray(grad_direct_by_x, dtype=np.float64),
             "grad_reinforce_by_x": np.asarray(grad_reinforce_by_x, dtype=np.float64),
@@ -119,6 +200,23 @@ class CDFMTrainerAnalytic(BaseTrainer):
                 self.optimizer.mask = original_mask
 
     def step(self, batch: Dict[str, Any], apply_update: bool = True) -> CDFMOut:
+        """Aggregate a CDFM batch and optionally apply one optimizer update.
+
+        Parameters
+        ----------
+        batch : CDFMBatch
+            Batch containing by-``x`` direct/reinforce gradient arrays, error
+            sums, sample counts, and optional weights.
+        apply_update : bool, default=True
+            If ``True``, call the optimizer and synchronize the forcefield.
+            If ``False``, compute loss/gradients without changing state.
+
+        Returns
+        -------
+        CDFMOut
+            Result dictionary with ``loss``, ``grad``, separated gradient
+            components, ``update``, and diagnostics under ``meta``.
+        """
         grad_direct_by_x = np.asarray(batch["grad_direct_by_x"], dtype=np.float64)
         grad_reinforce_by_x = np.asarray(batch["grad_reinforce_by_x"], dtype=np.float64)
         sse_by_x = np.asarray(batch["sse_by_x"], dtype=np.float64)
@@ -158,6 +256,7 @@ class CDFMTrainerAnalytic(BaseTrainer):
                 raise ValueError("batch['x_weight'] must have positive sum.")
             w_x = w_x / w_sum
 
+        # Collapse the by-x task dimension into one trainer-level gradient.
         grad_direct = w_x @ grad_direct_by_x
         grad_reinforce = w_x @ grad_reinforce_by_x
         weighted_sse = float(w_x @ sse_by_x)
@@ -182,6 +281,8 @@ class CDFMTrainerAnalytic(BaseTrainer):
         if em_guardrail not in {"freeze", "raise"}:
             raise ValueError("em_guardrail must be 'freeze' or 'raise'")
 
+        # Direct mode cannot identify latent-only parameters; freeze or fail
+        # before those coordinates reach the optimizer.
         latent_only_mask = (
             np.asarray(self.forcefield.virtual_mask, dtype=bool)
             & np.asarray(self.optimizer.mask, dtype=bool)
@@ -201,6 +302,8 @@ class CDFMTrainerAnalytic(BaseTrainer):
             grad[latent_only_mask] = 0.0
             grad_direct[latent_only_mask] = 0.0
 
+        # Apply the optimizer mask last so all returned gradient components
+        # match the trainable-coordinate convention used elsewhere in AceCG.
         mask = np.asarray(self.optimizer.mask, dtype=bool)
         grad[~mask] = 0.0
         grad_direct[~mask] = 0.0

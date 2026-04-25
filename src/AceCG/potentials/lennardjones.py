@@ -9,14 +9,20 @@ class LennardJonesPotential(BasePotential):
     """
 
     def __init__(self, typ1, typ2, epsilon: float, sigma: float, cutoff: float) -> None:
-        super().__init__()
-        """
-        Initialize the Lennard-Jones potential with parameters epsilon and sigma.
-        V_LJ (r) = 4ε[(σ/r)¹² - (σ/r)⁶]
+        """Initialize the Lennard-Jones 12-6 potential.
 
-        :param epsilon: Depth of the potential well.
-        :param sigma: Finite distance at which the potential is zero.
+        Parameters
+        ----------
+        typ1, typ2 : int or str
+            Pair type labels.
+        epsilon : float
+            Depth of the potential well.
+        sigma : float
+            Distance scale in ``V(r) = 4 epsilon [(sigma/r)^12 - (sigma/r)^6]``.
+        cutoff : float
+            Pair cutoff distance stored for LAMMPS export.
         """
+        super().__init__()
         self.typ1  = typ1
         self.typ2  = typ2
         self.cutoff = cutoff
@@ -30,6 +36,7 @@ class LennardJonesPotential(BasePotential):
         ]
 
     def is_param_linear(self) -> np.ndarray:
+        """Return which LJ parameters enter the energy linearly."""
         return np.array([True, False], dtype=bool)
 
     def value(self, r: np.ndarray) -> np.ndarray:

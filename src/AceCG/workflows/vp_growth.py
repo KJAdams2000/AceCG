@@ -73,6 +73,7 @@ class VPGrowthWorkflow:
         self.comm = comm
 
     def run(self) -> VPGrowthResult:
+        """Run VP growth and return the written output summary."""
         import MDAnalysis as mda
 
         cfg = self.config

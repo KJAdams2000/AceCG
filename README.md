@@ -1,7 +1,7 @@
-# AceCG
+# AceCG: A Comprehensive Engine for Coarse-Graining
 
 AceCG is a versatile and MPI-enabled coarse-graining force-field training engine for workflows such as
-FM, REM, Reweighted REM + MSE, CDREM and VP growth.
+FM, REM, Reweighted REM, MSE, CDREM and VP growth.
 
 ## Quick Start
 
@@ -20,10 +20,11 @@ Use a compute node for MPI, LAMMPS, production runs, and long test suites.
 
 ## Developer Team
 
-- [@Ace Yang](https://github.com/AceVolca)
+- [@Chengxi (Ace) Yang](https://github.com/AceVolca)
 - [@Weizhi Xue](https://github.com/KJAdams2000)
 - [@Zhikun Zhou](https://github.com/afakeoutstandingplyer)
+- [@Curt Waltmann](https://github.com/waltmann1)
+- [@Harper Smith](https://github.com/hesmithh)
 - [@Thomas Qu](https://github.com/FreddyNietzky)
 - [@Ivan Kuang](https://github.com/Miku-keai)
 - [@Brian Faintich](https://github.com/brianfaintich)
-- [@Curt Waltmann](https://github.com/waltmann1)

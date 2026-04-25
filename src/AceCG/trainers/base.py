@@ -11,26 +11,39 @@ from ..potentials.base import BasePotential
 from ..optimizers.base import BaseOptimizer
 
 class BaseTrainer(ABC):
-    """
-    Abstract base class for analytic trainers in AceCG.
+    """Abstract base class shared by AceCG analytic trainers.
+
+    ``BaseTrainer`` owns a private copy of a :class:`~AceCG.topology.Forcefield`
+    and optimizer so that trainer experiments do not mutate the caller's
+    original objects. Subclasses implement :meth:`step` and consume a
+    trainer-specific statistics batch.
 
     Parameters
     ----------
-    forcefield : dict
-        Mapping from key → BasePotential or List[BasePotential]. Will be deep-copied.
+    forcefield : Forcefield
+        Forcefield container whose ordered parameters define the optimization
+        vector. The object is deep-copied during initialization.
     optimizer : BaseOptimizer
-        Optimizer instance. Will be deep-copied.
+        Optimizer with a parameter vector and active-parameter mask matching
+        ``forcefield``. The optimizer is deep-copied during initialization.
     beta : float, optional
-        Inverse temperature β.
-    logger : SummaryWriter or None, optional
-        Optional logger.
+        Inverse temperature used by statistical trainers such as REM and CDREM.
+        Trainers that do not need a thermodynamic beta may leave it as ``None``.
+    logger : object, optional
+        Optional logger exposing ``add_scalar(name, value, step)``. TensorBoard
+        writers and lightweight logger adapters both work.
 
     Attributes
     ----------
-    forcefield : dict
-        Deep copy of the input forcefield dictionary.
+    forcefield : Forcefield
+        Private forcefield copy updated after every accepted optimizer step.
     optimizer : BaseOptimizer
-        Deep copy of the input optimizer.
+        Private optimizer copy that stores the current parameter vector,
+        learning-rate state, and active mask.
+    beta : float or None
+        Stored inverse temperature.
+    logger : object or None
+        Optional scalar logger.
     """
     def __init__(self, 
                  forcefield: Forcefield, 
@@ -54,8 +67,13 @@ class BaseTrainer(ABC):
         return self.forcefield.param_array()
 
     def update_forcefield(self, L_new: np.ndarray):
-        """
-        Update `self.forcefield` and `self.optimizer` with a new parameter vector.
+        """Synchronize the trainer forcefield and optimizer to a parameter vector.
+
+        Parameters
+        ----------
+        L_new : np.ndarray
+            Full ordered parameter vector. Its shape must match the current
+            forcefield parameter array and optimizer state.
         """
         self.forcefield.update_params(L_new)
         self.optimizer.set_params(L_new)
@@ -77,7 +95,14 @@ class BaseTrainer(ABC):
         self.update_forcefield(self.optimizer.L)
 
     def get_param_names(self) -> List[str]:
-        """Return ordered list of human-readable parameter names."""
+        """Return ordered human-readable names for all forcefield parameters.
+
+        Returns
+        -------
+        list[str]
+            Names in the same order as :meth:`get_params`, formatted as
+            ``"<interaction-label>[<local-index>]"``.
+        """
         names = []
         for key, pot in IteratePotentials(self.forcefield):
             prefix = key.label()
@@ -86,22 +111,46 @@ class BaseTrainer(ABC):
         return names
 
     def get_param_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (lower_bounds, upper_bounds) arrays."""
+        """Return lower and upper bounds for the global parameter vector.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            ``(lower_bounds, upper_bounds)`` arrays ordered like
+            :meth:`get_params`.
+        """
         return self.forcefield.param_bounds
 
     def get_interaction_labels(self) -> List[str]:
-        """Return ordered list of interaction labels."""
+        """Return ordered labels for forcefield interactions.
+
+        Returns
+        -------
+        list[str]
+            Labels generated from each :class:`InteractionKey` in forcefield
+            order.
+        """
         return [key.label() for key in self.forcefield.keys()]
 
     def n_total_params(self) -> int:
-        """Total number of trainable parameters."""
+        """Return the total number of parameters in the owned forcefield.
+
+        Returns
+        -------
+        int
+            Full parameter count before applying the optimizer mask.
+        """
         return sum(p.n_params() for _, p in IteratePotentials(self.forcefield))
 
     def active_interaction_mask(self) -> dict:
-        """Return L1 interaction mask derived from the L2 parameter mask.
+        """Return the interaction-level mask induced by the optimizer mask.
 
-        Returns a ``{key: bool}`` dict.  A key is ``True`` when at least
-        one of its parameters is trainable (active in the L2 mask).
+        Returns
+        -------
+        dict
+            Mapping ``InteractionKey`` objects to booleans. A key is ``True``
+            when at least one of its parameters is active in the optimizer's
+            parameter-level mask.
         """
         n = self.n_total_params()
         mask = getattr(self.optimizer, "mask", None)
@@ -113,7 +162,14 @@ class BaseTrainer(ABC):
         return self.forcefield.derive_l1_mask(l2)
 
     def is_optimization_linear(self) -> bool:
-        """Return True when all active optimization channels are linear."""
+        """Report whether all active parameters enter their potentials linearly.
+
+        Returns
+        -------
+        bool
+            ``True`` if every active parameter is marked linear by its
+            potential; ``False`` if any active parameter is nonlinear.
+        """
         n_params = self.forcefield.n_params()
 
         mask = getattr(self.optimizer, "mask", None)
@@ -144,7 +200,15 @@ class BaseTrainer(ABC):
         return True
     
     def optimizer_accepts_hessian(self) -> bool:
-        """Check if the optimizer's step method accepts a 'hessian' argument."""
+        """Return whether the configured optimizer can consume a Hessian.
+
+        Returns
+        -------
+        bool
+            ``True`` when the optimizer ``step`` signature includes a
+            ``hessian`` argument. Second-order trainers use this to decide
+            whether to require Hessian statistics in their batches.
+        """
         return hasattr(self.optimizer, 'step') and 'hessian' in self.optimizer.step.__code__.co_varnames
 
     @abstractmethod

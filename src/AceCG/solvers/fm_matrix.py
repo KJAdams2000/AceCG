@@ -55,7 +55,32 @@ def _chol_inverse_diag(factor: np.ndarray, eye: np.ndarray) -> np.ndarray:
 
 
 class FMMatrixSolver(BaseSolver):
-    """One-shot OLS, ridge, or diagonal-Bayesian solver for FM statistics."""
+    """One-shot OLS, ridge, or diagonal-Bayesian solver for FM statistics.
+
+    Parameters
+    ----------
+    forcefield : Forcefield
+        Forcefield copied into the solver. Its parameter mask selects active
+        degrees of freedom.
+    mode : {"ols", "ridge", "bayesian"}, default="ols"
+        Linear solve strategy. ``"ols"`` uses a scaled least-squares solve,
+        ``"ridge"`` adds scalar Tikhonov regularization, and ``"bayesian"``
+        iteratively estimates diagonal prior precisions.
+    ridge_alpha : float, default=0.0
+        Ridge penalty added to active diagonal entries when ``mode="ridge"``.
+    bayesian_tol : float, default=1.0e-6
+        Relative convergence tolerance for Bayesian alpha/beta updates.
+    bayesian_min_iter : int, default=10
+        Minimum Bayesian iterations before convergence may be accepted.
+    bayesian_max_iter : int, default=100
+        Maximum Bayesian iterations.
+    bayesian_alpha_init : float, optional
+        Initial prior precision. If omitted, an automatic scale is used.
+    bayesian_beta_init : float, optional
+        Initial noise precision. If omitted, it is estimated from residuals.
+    logger : object, optional
+        Optional scalar logger exposing ``add_scalar``.
+    """
 
     BATCH_SCHEMA = {
         "JtJ": "(p, p) normalized force-matching normal matrix",
@@ -86,6 +111,10 @@ class FMMatrixSolver(BaseSolver):
         bayesian_beta_init: float | None = None,
         logger=None,
     ):
+        """Initialize the FM matrix solver.
+
+        Parameters are the same as documented on :class:`FMMatrixSolver`.
+        """
         super().__init__(forcefield, logger=logger)
         self.mode = str(mode).strip().lower()
         self.ridge_alpha = float(ridge_alpha)
@@ -189,6 +218,23 @@ class FMMatrixSolver(BaseSolver):
         }
 
     def solve(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Solve one normalized FM normal-equation batch.
+
+        Parameters
+        ----------
+        batch : dict
+            Batch with ``JtJ`` shape ``(n_params, n_params)``, ``Jty`` shape
+            ``(n_params,)``, scalar ``y_sumsq``, integer ``nframe``, scalar
+            ``weight_sum``, and integer ``n_atoms_obs``. ``step_index`` is
+            optional and only used for logging.
+
+        Returns
+        -------
+        dict
+            ``params`` contains the solved full parameter vector, ``loss`` is
+            the normalized FM loss at that vector, ``mode`` echoes the solver
+            mode, and ``meta`` stores diagnostics.
+        """
         JtJ = np.asarray(batch["JtJ"], dtype=np.float64)
         Jty = _vec(batch["Jty"])
         y_sumsq = float(batch["y_sumsq"])

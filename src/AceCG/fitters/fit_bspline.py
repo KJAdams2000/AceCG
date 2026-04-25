@@ -116,9 +116,11 @@ class BSplineTableFitter(BaseTableFitter):
             setattr(self.cfg, k, v)
 
     def profile_name(self) -> str:
+        """Return this fitter's registry profile name."""
         return "bspline"
 
     def fit(self, table_path: str, typ1: str, typ2: str) -> BSplinePotential:
+        """Fit a force-basis B-spline potential from a table file."""
         r, V, F = parse_lammps_table(table_path)
         r = np.asarray(r, dtype=float).ravel()
 

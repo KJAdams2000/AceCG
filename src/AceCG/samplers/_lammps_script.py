@@ -30,14 +30,17 @@ class LammpsScriptInfo:
 
     @property
     def init_data_path(self) -> Path:
+        """Return the initial LAMMPS data file path referenced by ``read_data``."""
         return self.read_data_path
 
     @property
     def trajectory_path(self) -> Path:
+        """Return the trajectory dump path produced by the script."""
         return self.last_dump_path
 
     @property
     def checkpoint_path(self) -> Optional[Path]:
+        """Return the replay/checkpoint data path produced by ``write_data``."""
         return self.write_data_path
 
 

@@ -25,6 +25,17 @@ BoundPatternMap = Mapping[InteractionKey, Mapping[Pattern, Bound]]
 class Forcefield(MutableMapping):
     """Dict-like container: ``InteractionKey → List[BasePotential]``.
 
+    Parameters
+    ----------
+    data : dict or Forcefield, optional
+        Initial mapping from interaction keys to lists of potentials. Passing
+        another ``Forcefield`` creates a copy constructor path.
+
+    Notes
+    -----
+    The container caches the global parameter vector, masks, bounds, and
+    per-potential slices so trainers can operate on a single flat vector.
+
     >>> ff = Forcefield({key: [pot]})
     >>> ff[key]               # list of potentials
     >>> ff.param_array()      # flat parameter vector
@@ -48,7 +59,13 @@ class Forcefield(MutableMapping):
     # ==================================================================
 
     def __init__(self, data: Optional[Dict[InteractionKey, List[BasePotential]]] = None):
-        """Create from a dict, another Forcefield (copy constructor), or empty.
+        """Create a forcefield container.
+
+        Parameters
+        ----------
+        data : dict[InteractionKey, list[BasePotential]] or Forcefield, optional
+            Source forcefield data. ``None`` creates an empty container; a dict
+            is deep-copied; a ``Forcefield`` uses the copy-constructor path.
 
         >>> ff = Forcefield({key: [pot1, pot2]})
         >>> ff2 = Forcefield(ff)
@@ -193,7 +210,13 @@ class Forcefield(MutableMapping):
         return [sl for _, _, sl in self.param_blocks()]
 
     def update_params(self, L: np.ndarray) -> None:
-        """Write *L* back into all potentials and update the ``_param`` cache.
+        """Write a full parameter vector back into all potentials.
+
+        Parameters
+        ----------
+        L : np.ndarray
+            One-dimensional global parameter vector with length
+            :meth:`n_params`.
 
         >>> ff.update_params(new_theta)
         """
@@ -225,6 +248,7 @@ class Forcefield(MutableMapping):
 
     @param_mask.setter
     def param_mask(self, mask: np.ndarray) -> None:
+        """Set the parameter-level trainability mask."""
         mask = np.asarray(mask, dtype=bool)
         n = self.n_params()
         if mask.shape != (n,):
@@ -245,6 +269,7 @@ class Forcefield(MutableMapping):
 
     @key_mask.setter
     def key_mask(self, km: Mapping[InteractionKey, bool]) -> None:
+        """Set the interaction-level mask and propagate it to parameters."""
         self._validate_interaction_keyed_mapping("key_mask", km)
         n = self.n_params()
         mask = self._param_mask if self._param_mask is not None else np.ones(n, dtype=bool)
@@ -267,7 +292,30 @@ class Forcefield(MutableMapping):
         case_sensitive: bool = True,
         global_patterns: Optional[Iterable[str]] = None,
     ) -> np.ndarray:
-        """Build L2 mask via glob/regex patterns.  Stores on ``param_mask``.
+        """Build and store a parameter-level mask from name patterns.
+
+        Parameters
+        ----------
+        init_mask : np.ndarray, optional
+            Starting mask. If omitted, the initial mask is all trainable for
+            ``mode="freeze"`` and all frozen for ``mode="train"``.
+        patterns : Mapping[InteractionKey, Iterable[str]], optional
+            Per-interaction parameter name patterns. Glob patterns are used by
+            default; prefix a pattern with ``"re:"`` to use a regular
+            expression.
+        mode : {"freeze", "train"}, default="freeze"
+            Whether matching parameters should be frozen or trained.
+        strict : bool, default=False
+            If ``True``, raise when a pattern matches no parameters.
+        case_sensitive : bool, default=True
+            Whether glob/regex matching is case-sensitive.
+        global_patterns : Iterable[str], optional
+            Patterns applied to every interaction.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask ordered like :meth:`param_array`.
 
         ``patterns`` must be keyed by ``InteractionKey``.
 
@@ -361,7 +409,13 @@ class Forcefield(MutableMapping):
     # ------------------------------------------------------------------
 
     def set_vp_masks(self, vp_types: Iterable[str]) -> None:
-        """Classify params as virtual / real / mixed from VP type names.
+        """Classify parameters as virtual, real, or mixed.
+
+        Parameters
+        ----------
+        vp_types : Iterable[str]
+            Type labels treated as virtual-particle types. Each interaction is
+            classified by how many of its type labels appear in this set.
 
         >>> ff.set_vp_masks(["VP"])
         >>> ff.virtual_mask  # True where all types are VP
@@ -435,6 +489,7 @@ class Forcefield(MutableMapping):
 
     @param_bounds.setter
     def param_bounds(self, bounds: Tuple[np.ndarray, np.ndarray]) -> None:
+        """Set lower and upper bound arrays for the full parameter vector."""
         lb, ub = bounds
         lb = np.asarray(lb, dtype=float)
         ub = np.asarray(ub, dtype=float)
@@ -445,7 +500,17 @@ class Forcefield(MutableMapping):
         self._param_bounds_ub = ub.copy()
 
     def apply_bounds(self, L: np.ndarray) -> np.ndarray:
-        """Clamp *L* into ``[lb, ub]``.  Returns the (possibly clamped) copy.
+        """Clamp a parameter vector into stored bounds.
+
+        Parameters
+        ----------
+        L : np.ndarray
+            Parameter vector ordered like :meth:`param_array`.
+
+        Returns
+        -------
+        np.ndarray
+            ``L`` clipped elementwise into ``[lower_bounds, upper_bounds]``.
 
         >>> L_clamped = ff.apply_bounds(L)
         """
@@ -464,7 +529,23 @@ class Forcefield(MutableMapping):
         global_bounds: Optional[Dict[Pattern, Bound]] = None,
         case_sensitive: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Build per-parameter bounds via pattern matching.  Stores on ``param_bounds``.
+        """Build and store per-parameter bounds through name patterns.
+
+        Parameters
+        ----------
+        pair_bounds : Mapping[InteractionKey, Mapping[str, tuple]], optional
+            Per-interaction bounds. Inner keys are glob patterns or ``"re:"``
+            regular expressions; values are ``(lower, upper)`` where ``None``
+            means unbounded on that side.
+        global_bounds : dict[str, tuple], optional
+            Bounds patterns applied to every interaction.
+        case_sensitive : bool, default=True
+            Whether pattern matching is case-sensitive.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            Lower and upper bound arrays ordered like :meth:`param_array`.
 
         ``pair_bounds`` must be keyed by ``InteractionKey``.
 

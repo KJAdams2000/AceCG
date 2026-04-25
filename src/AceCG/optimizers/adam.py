@@ -2,12 +2,27 @@ import numpy as np
 from .base import BaseOptimizer
 
 class AdamMaskedOptimizer(BaseOptimizer):
-    """
-    Adam optimizer with masked parameter updates.
+    """Adam optimizer with masked parameter updates.
 
-    Supports standard Adam logic but only updates parameters where mask=True.
-    
-    Support random noise pertubation during the optimization
+    Parameters
+    ----------
+    L : np.ndarray
+        Initial full parameter vector.
+    mask : np.ndarray
+        Boolean mask selecting trainable entries of ``L``.
+    lr : float, default=1e-2
+        Adam learning rate.
+    beta1 : float, default=0.9
+        Exponential decay rate for the first moment estimate.
+    beta2 : float, default=0.999
+        Exponential decay rate for the second moment estimate.
+    eps : float, default=1e-8
+        Numerical stability term added to the square-root variance.
+    noise_sigma : float, default=0.0
+        Standard deviation of optional preconditioned Gaussian noise. ``0``
+        disables stochastic perturbations.
+    seed : int or None, optional
+        Seed passed to NumPy's random generator for reproducible noise.
     """
 
     def __init__(self, L, mask, lr=1e-2, beta1=0.9, beta2=0.999, eps=1e-8, noise_sigma=0.0, seed=None):
@@ -60,6 +75,14 @@ class AdamMaskedOptimizer(BaseOptimizer):
         return self.last_update
 
     def state_dict(self) -> dict:
+        """Return optimizer state including Adam moments.
+
+        Returns
+        -------
+        dict
+            Serializable state containing base fields, step counter, moment
+            buffers, hyperparameters, and noise scale.
+        """
         d = super().state_dict()
         d.update({
             "t": int(self.t),
@@ -73,6 +96,14 @@ class AdamMaskedOptimizer(BaseOptimizer):
         return d
 
     def load_state_dict(self, state: dict) -> None:
+        """Restore Adam state from :meth:`state_dict`.
+
+        Parameters
+        ----------
+        state : dict
+            State dictionary produced by a compatible
+            :class:`AdamMaskedOptimizer`.
+        """
         super().load_state_dict(state)
         self.t = int(state["t"])
         self.m = np.asarray(state["m"], dtype=self.L.dtype)

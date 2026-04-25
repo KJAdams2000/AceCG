@@ -1,222 +1,218 @@
-# 01 Potential 模块开发者参考
+# 01 Potential Module Developer Reference
 
 *Updated: 2026-04-23.*
 
-Potential 是建模栈最底层的标量相互作用模型。
-每次评估一个相互作用坐标，暴露参数导数供 `compute/`、trainer 和 solver 使用。
-**不了解** MPI、`FrameGeometry`、原子所有权或 workflow。
+Potentials are the lowest-level scalar interaction models in the modeling stack. Each potential evaluates one interaction coordinate and exposes parameter derivatives for `compute/`, trainers, and solvers. A potential does not know about MPI, `FrameGeometry`, atom ownership, or workflows.
 
 ---
 
-## 核心模块
+## Core Modules
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `potentials/base.py` | `BasePotential` + `IteratePotentials()` |
-| `potentials/harmonic.py` | 谐振 bonded / angle potential |
-| `potentials/gaussian.py` | 归一化 Gaussian pair potential |
+| `potentials/base.py` | `BasePotential` and `IteratePotentials()` |
+| `potentials/harmonic.py` | Harmonic bonded / angle potential |
+| `potentials/gaussian.py` | Normalized Gaussian pair potential |
 | `potentials/lennardjones.py` | Lennard-Jones 12-6 pair potential |
 | `potentials/lennardjones96.py` | Lennard-Jones 9-6 pair potential |
-| `potentials/lennardjones_soft.py` | 软核 LJ 变体 |
-| `potentials/bspline.py` | force-basis B-spline potential |
-| `potentials/multi_gaussian.py` | 归一化 multi-Gaussian family |
-| `potentials/unnormalized_multi_gaussian.py` | 非归一化 LAMMPS 风格 multi-Gaussian |
+| `potentials/lennardjones_soft.py` | Soft-core LJ variant |
+| `potentials/bspline.py` | Force-basis B-spline potential |
+| `potentials/multi_gaussian.py` | Normalized multi-Gaussian family |
+| `potentials/unnormalized_multi_gaussian.py` | Unnormalized LAMMPS-style multi-Gaussian |
 | `potentials/srlrgaussian.py` | SR/LR Gaussian pair potential |
 
-`AceCG.potentials.__init__` 还定义了 `POTENTIAL_REGISTRY`，
-即 LAMMPS 风格名称到 concrete potential 类的映射。
+`AceCG.potentials.__init__` also defines `POTENTIAL_REGISTRY`, the mapping from LAMMPS-style names to concrete potential classes.
 
 ---
 
-## 层边界
+## Layer Boundaries
 
-```
+```text
 topology / Forcefield
-  → key 排序、mask、bounds、参数拼接
+  -> key ordering, masks, bounds, parameter concatenation
 
 potential
-  → value(r)、force(r)、关于局部参数的导数通道
+  -> value(r), force(r), derivatives with respect to local parameters
 
 compute
-  → 通过 Forcefield 和 FrameGeometry 调用 potential，
-    组装 per-frame 能量、力、Jacobian、Hessian
+  -> calls potentials through Forcefield and FrameGeometry,
+     assembling per-frame energy, force, Jacobian, and Hessian data
 ```
 
-**Potential 应该拥有**：
+A potential should own:
 
-- 一个相互作用模型的局部参数向量
-- 标量评估规则
-- 参数导数通道
-- 可选局部 bounds 和线性性元数据
+- the local parameter vector for one interaction model
+- scalar evaluation rules
+- parameter-derivative channels
+- optional local bounds and linearity metadata
 
-**Potential 不应该拥有**：
+A potential should not own:
 
-- 原子 index
-- MPI 或帧迭代
-- pair 搜索
-- Cartesian 力组装
-- workflow 或 trainer 状态
+- atom indices
+- MPI or frame iteration
+- pair search
+- Cartesian force assembly
+- workflow or trainer state
 
 ---
 
-## 公开 Potential 接口
+## Public Potential Interface
 
-`AceCG.potentials` 导出：
+`AceCG.potentials` exports:
 
-| 符号 | 含义 |
+| Symbol | Meaning |
 |---|---|
-| `BasePotential` | 抽象基类 |
-| `IteratePotentials` | 展平 `(key, potential)` 迭代辅助 |
-| `BSplinePotential` | force-basis spline |
-| `GaussianPotential` | 归一化 Gaussian |
-| `HarmonicPotential` | 谐振 |
+| `BasePotential` | Abstract base class |
+| `IteratePotentials` | Flattened `(key, potential)` iteration helper |
+| `BSplinePotential` | Force-basis spline |
+| `GaussianPotential` | Normalized Gaussian |
+| `HarmonicPotential` | Harmonic potential |
 | `LennardJonesPotential` | LJ 12-6 |
 | `LennardJones96Potential` | LJ 9-6 |
-| `LennardJonesSoftPotential` | 软核 LJ |
-| `MultiGaussianPotential` | 归一化 multi-Gaussian |
-| `UnnormalizedMultiGaussianPotential` | 非归一化 multi-Gaussian |
+| `LennardJonesSoftPotential` | Soft-core LJ |
+| `MultiGaussianPotential` | Normalized multi-Gaussian |
+| `UnnormalizedMultiGaussianPotential` | Unnormalized multi-Gaussian |
 | `SRLRGaussianPotential` | SR/LR Gaussian |
-| `POTENTIAL_REGISTRY` | style 名称 → 类 查找表 |
+| `POTENTIAL_REGISTRY` | Style-name to class lookup table |
 
 ---
 
-## `BasePotential`（potentials/base.py）
+## `BasePotential`
 
-### 必须实现的方法
+### Required Methods
 
-| 方法 | 含义 |
+| Method | Meaning |
 |---|---|
-| `value(r)` | 在局部坐标 `r` 处的标量势能 |
-| `force(r)` | 标量力 $F = -dU/dr$ |
+| `value(r)` | Scalar potential energy at local coordinate `r` |
+| `force(r)` | Scalar force, `F = -dU/dr` |
 
-`r` 是局部标量坐标向量，**不是** Cartesian 坐标：
+`r` is a local scalar coordinate vector, not Cartesian coordinates:
 
-- pair potential：pair 距离
-- bond potential：键长
-- angle potential：角度坐标
-- dihedral：二面角坐标
+- pair potential: pair distance
+- bond potential: bond length
+- angle potential: angle coordinate
+- dihedral potential: dihedral coordinate
 
-### 常见元数据
+### Common Metadata
 
-子类需要填充：
+Subclasses should populate:
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
-| `_params` | 当前参数向量 |
-| `_param_names` | 参数标签 |
-| `_dparam_names` | 能量一阶导数通道名称 |
-| `_d2param_names` | 能量二阶导数通道名称 |
-| `_df_dparam_names` | 力一阶导数通道名称 |
-| `_param_linear_mask` | per-parameter 线性性 mask |
-| `_params_to_scale` | 受 `get_scaled_potential(z)` 影响的参数 |
+| `_params` | Current parameter vector |
+| `_param_names` | Parameter labels |
+| `_dparam_names` | First energy-derivative channel names |
+| `_d2param_names` | Second energy-derivative channel names |
+| `_df_dparam_names` | First force-derivative channel names |
+| `_param_linear_mask` | Per-parameter linearity mask |
+| `_params_to_scale` | Parameters affected by `get_scaled_potential(z)` |
 
-### 常见辅助方法
+### Common Helpers
 
-| 方法 | 含义 |
+| Method | Meaning |
 |---|---|
-| `get_params()` / `set_params()` | 参数访问 |
-| `n_params()` | 局部标量参数数 |
-| `param_names()` | 参数标签 |
-| `energy_grad(r)` | 叠加的 $dU/d\theta$ 通道 |
-| `force_grad(r)` | 叠加的 $dF/d\theta$ 通道 |
-| `basis_values(r)` | per-parameter 力基函数值 |
-| `basis_derivatives(r)` | 力基函数关于 `r` 的导数 |
-| `is_param_linear()` | 线性性 mask |
-| `get_scaled_potential(z)` | 返回选定参数缩放后的副本 |
+| `get_params()` / `set_params()` | Parameter access |
+| `n_params()` | Number of local scalar parameters |
+| `param_names()` | Parameter labels |
+| `energy_grad(r)` | Stacked `dU/dtheta` channels |
+| `force_grad(r)` | Stacked `dF/dtheta` channels |
+| `basis_values(r)` | Per-parameter force-basis values |
+| `basis_derivatives(r)` | Force-basis derivatives with respect to `r` |
+| `is_param_linear()` | Linearity mask |
+| `get_scaled_potential(z)` | Return a copy with selected parameters scaled |
 
 ---
 
-## 科学合同
+## Scientific Contract
 
-### 标量力约定
+### Scalar Force Convention
 
-所有 potential 返回标量力：
+All potentials return scalar force:
 
 $$F(r) = -\frac{dU}{dr}$$
 
-Compute 层通过 `FrameGeometry` 中的几何方向向量将标量量投影回 Cartesian 原子力。
+The compute layer projects scalar quantities back to Cartesian atom forces through the geometric direction vectors in `FrameGeometry`.
 
-### 能量导数通道
+### Energy Derivative Channels
 
-`compute.energy` 由以下构建：
+`compute.energy` builds:
 
 - `energy`
-- `energy_grad`（对参数的一阶导数）
-- `energy_hessian`（对参数的二阶导数）
+- `energy_grad`, first derivative with respect to parameters
+- `energy_hessian`, second derivative with respect to parameters
 
-分别来自 `value(r)`、`_dparam_names`、`_d2param_names`。
+These come from `value(r)`, `_dparam_names`, and `_d2param_names`.
 
-### 力导数通道
+### Force Derivative Channels
 
-`compute.force` 和 FM/CDFM 使用 `force_grad(r)` 或 `basis_values(r)` 构建力 Jacobian。
+`compute.force` and FM/CDFM build force Jacobians from `force_grad(r)` or `basis_values(r)`.
 
-为了性能，新 potential 应通过 `_df_dparam_names` 或直接覆盖 `basis_values(r)` 提供解析导数。
-若不提供，`BasePotential.force_grad()` 退回有限差分——正确但**慢得多**，只应视为开发退路。
+For performance, new potentials should provide analytic derivatives through `_df_dparam_names` or override `basis_values(r)` directly. If no derivative is provided, `BasePotential.force_grad()` falls back to finite differences. That fallback is correct but much slower and should only be treated as a development fallback.
 
 ---
 
-## 内置 Potential 家族
+## Built-In Potential Families
 
-### 解析参数化 potential
+### Analytic Parameterizations
 
-| 类 | 说明 |
+| Class | Notes |
 |---|---|
-| `HarmonicPotential` | 两参数 `k, r0`；`k` 是线性的，`r0` 是非线性的 |
-| `GaussianPotential` | 幅度是线性的；中心和宽度是非线性的 |
-| `LennardJonesPotential` | epsilon 是线性的，sigma 是非线性的 |
-| `LennardJones96Potential` | 与 LJ 12-6 同高层结构 |
-| `LennardJonesSoftPotential` | 软核非线性 LJ family |
+| `HarmonicPotential` | Two parameters, `k` and `r0`; `k` is linear, `r0` is nonlinear |
+| `GaussianPotential` | Amplitude is linear; center and width are nonlinear |
+| `LennardJonesPotential` | Epsilon is linear, sigma is nonlinear |
+| `LennardJones96Potential` | Same high-level structure as LJ 12-6 |
+| `LennardJonesSoftPotential` | Soft-core nonlinear LJ family |
 
-这些类暴露显式解析的一阶和二阶导数。
+These classes expose explicit analytic first and second derivatives.
 
-### Force-basis potential
+### Force-Basis Potential
 
-| 类 | 说明 |
+| Class | Notes |
 |---|---|
-| `BSplinePotential` | 系数直接参数化力；所有通道是线性的 |
+| `BSplinePotential` | Coefficients directly parameterize force; all channels are linear |
 
-`BSplinePotential` 特殊性：
+`BSplinePotential` is special because:
 
-- 力是直接模型输出
-- 能量通过对基函数积分获得
-- 所有参数是线性优化通道
-- 为 FM/CDFM 提供稠密和稀疏基函数访问
+- force is the direct model output
+- energy is obtained by integrating basis functions
+- all parameters are linear optimization channels
+- dense and sparse basis access are available for FM/CDFM
 
-### Multi-component Gaussian family
+### Multi-Component Gaussian Family
 
-| 类 | 说明 |
+| Class | Notes |
 |---|---|
-| `MultiGaussianPotential` | 归一化 Gaussian mixture；幅度线性，中心/宽度非线性 |
-| `UnnormalizedMultiGaussianPotential` | 非归一化 LAMMPS 风格混合 |
-| `SRLRGaussianPotential` | 专用于短程/长程模型的 Gaussian family |
+| `MultiGaussianPotential` | Normalized Gaussian mixture; amplitudes are linear, centers and widths are nonlinear |
+| `UnnormalizedMultiGaussianPotential` | Unnormalized LAMMPS-style mixture |
+| `SRLRGaussianPotential` | Gaussian family for short-range / long-range models |
 
-这些模型依赖向量化动态导数分发，暴露组件内二阶导数，组件间二阶导数为零。
+These models use vectorized dynamic derivative dispatch. They expose second derivatives within each component; cross-component second derivatives are zero.
 
 ---
 
 ## `IteratePotentials(forcefield)`
 
-展平迭代辅助：
+Flattened iteration helper:
 
 ```python
 for key, pot in IteratePotentials(forcefield):
     ...
 ```
 
-同时适用于：
+Works for both:
 
-- 旧式 `Dict[key, BasePotential]`
-- 当前式 `Forcefield` / `Dict[key, List[BasePotential]]`
+- legacy `Dict[key, BasePotential]`
+- current `Forcefield` / `Dict[key, List[BasePotential]]`
 
-想要展平按参数顺序遍历时用它；想要 grouped-by-key 视图时用 `forcefield.items()`。
+Use it when you want to iterate in flattened parameter order. Use `forcefield.items()` when you want a grouped-by-key view.
 
 ---
 
-## Registry 合同
+## Registry Contract
 
-`POTENTIAL_REGISTRY` 将外部 style 名称映射到类：
+`POTENTIAL_REGISTRY` maps external style names to classes:
 
-| Registry key | 类 |
+| Registry key | Class |
 |---|---|
 | `harmonic` | `HarmonicPotential` |
 | `gauss/cut`, `gauss/wall` | `GaussianPotential` |
@@ -227,61 +223,61 @@ for key, pot in IteratePotentials(forcefield):
 | `double/gauss` | `UnnormalizedMultiGaussianPotential` |
 | `srlr_gauss` | `SRLRGaussianPotential` |
 
-添加新的可序列化 potential family 时，在此处注册。
+Register a new potential family here when it should be serializable from external styles.
 
 ---
 
-## 与 Forcefield 的交互
+## Interaction With `Forcefield`
 
-Potential 不管理全局 mask 或 bounds，那是 `Forcefield` 的职责。
+Potentials do not manage global masks or bounds. That is the responsibility of `Forcefield`.
 
-**Potential 应该提供**：
+Potentials should provide:
 
-- 局部参数向量
-- 局部导数通道
-- 可选 `param_bounds()` 用于局部 bounds
-- 通过 `_param_linear_mask` 提供线性性信息
+- local parameter vectors
+- local derivative channels
+- optional `param_bounds()` for local bounds
+- linearity information via `_param_linear_mask`
 
-**`Forcefield` 在上层构建**：
+`Forcefield` builds:
 
-- 全局参数向量
-- per-parameter 和 per-key mask
-- 全局 bounds 数组
-- 参数切片和偏移
-
----
-
-## 新 Potential 的设计规则
-
-添加新 potential 时：
-
-1. 继承 `BasePotential`
-2. 用向量化 NumPy 实现 `value(r)` 和 `force(r)`
-3. 填充 `_params`、`_param_names`、`_dparam_names`、`_param_linear_mask`
-4. 提供 `_df_dparam_names` 或覆盖 `basis_values(r)` 以高效支持 FM
-5. 如果 REM/CDREM Hessian 支持重要，提供 `_d2param_names`
-6. 若存在自然 bounds，提供 `param_bounds()`
-7. 若是公开 style 集合的一部分，在 `POTENTIAL_REGISTRY` 注册
-
-避免：
-
-- 在 potential 内嵌入原子 index 或拓扑逻辑
-- 每个样本分配 Python 对象
-- 在生产路径中依赖有限差分 `force_grad()`
-- 在 potential 内部读取 workflow 或 optimizer 状态
+- the global parameter vector
+- per-parameter and per-key masks
+- global bounds arrays
+- parameter slices and offsets
 
 ---
 
-## Workflow 合法访问模式
+## Rules for New Potentials
 
-**Do**：
+When adding a new potential:
 
-- 通过 `Forcefield` 组装或序列化辅助函数构建 potential
-- 将 potential 作为低层科学模型对象对待
-- 让 compute / trainer / solver 代码通过 `Forcefield` 消耗它们
+1. Inherit from `BasePotential`.
+2. Implement `value(r)` and `force(r)` with vectorized NumPy.
+3. Populate `_params`, `_param_names`, `_dparam_names`, and `_param_linear_mask`.
+4. Provide `_df_dparam_names` or override `basis_values(r)` for efficient FM support.
+5. Provide `_d2param_names` if REM/CDREM Hessian support matters.
+6. Provide `param_bounds()` when natural bounds exist.
+7. Register it in `POTENTIAL_REGISTRY` if it is part of the public style set.
 
-**Do not**：
+Avoid:
 
-- 在 workflow 代码中直接调用 potential 方法来复现 compute 数学
-- 在 potential 使用中混入拓扑 index 或 MPI 逻辑
-- 在拥有的 `Forcefield` / trainer / solver 之外 mutate potential 参数
+- embedding atom indices or topology logic in potentials
+- allocating Python objects per sample
+- relying on finite-difference `force_grad()` in production paths
+- reading workflow or optimizer state from inside a potential
+
+---
+
+## Allowed Workflow Access Patterns
+
+Do:
+
+- build or serialize potentials through `Forcefield` helpers
+- treat potentials as low-level scientific model objects
+- let compute, trainer, and solver code consume them through `Forcefield`
+
+Do not:
+
+- directly call potential methods from workflow code to reproduce compute math
+- mix topology indices or MPI logic into potential usage
+- mutate potential parameters outside the owning `Forcefield`, trainer, or solver

@@ -3,6 +3,27 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 class BaseOptimizer(ABC):
+    """Base class for masked optimizers used by AceCG trainers.
+
+    Parameters
+    ----------
+    L : np.ndarray
+        Initial full parameter vector.
+    mask : np.ndarray
+        Boolean array with the same shape as ``L``. ``True`` entries are
+        trainable; ``False`` entries remain fixed.
+    lr : float
+        Learning-rate multiplier used by concrete optimizers.
+
+    Attributes
+    ----------
+    L : np.ndarray
+        Mutable optimizer-side parameter vector.
+    mask : np.ndarray
+        Boolean active-coordinate mask.
+    lr : float
+        Current learning rate.
+    """
     def __init__(self, L: np.ndarray, mask: np.ndarray, lr: float):
         """
         Parameters
@@ -33,6 +54,11 @@ class BaseOptimizer(ABC):
     def state_dict(self) -> dict:
         """Return serializable optimizer state (parameters + base scalars).
 
+        Returns
+        -------
+        dict
+            JSON-compatible dictionary containing ``L``, ``mask``, and ``lr``.
+
         Subclasses override to include moment buffers, step counters, etc.
         """
         return {
@@ -42,7 +68,13 @@ class BaseOptimizer(ABC):
         }
 
     def load_state_dict(self, state: dict) -> None:
-        """Restore optimizer state from a dict returned by :meth:`state_dict`."""
+        """Restore optimizer state from a dictionary.
+
+        Parameters
+        ----------
+        state : dict
+            Dictionary produced by :meth:`state_dict` on a compatible optimizer.
+        """
         self.L = np.asarray(state["L"], dtype=self.L.dtype)
         self.mask = np.asarray(state["mask"], dtype=bool)
         self.lr = float(state["lr"])

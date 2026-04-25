@@ -58,6 +58,21 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
         *,
         sigma_floor: float = 1e-8,
     ):
+        """Initialize an unnormalized multi-Gaussian potential.
+
+        Parameters
+        ----------
+        typ1, typ2 : str
+            Pair type labels.
+        n_gauss : int
+            Number of Gaussian components.
+        cutoff : float, default=np.inf
+            Optional pair cutoff. Values beyond the cutoff are zeroed.
+        init_params : np.ndarray, optional
+            Flat parameter vector ordered ``[A0, r0_0, sigma_0, A1, ...]``.
+        sigma_floor : float, default=1e-8
+            Minimum allowed sigma used for numerical stability.
+        """
         super().__init__()
         if n_gauss < 1:
             raise ValueError("n_gauss must be >= 1")
@@ -120,14 +135,17 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
     # -------- params as views --------
     @property
     def A(self) -> np.ndarray:
+        """Return a view of Gaussian amplitudes ``A_k``."""
         return self._params[0::3]
 
     @property
     def r0(self) -> np.ndarray:
+        """Return a view of Gaussian centers ``r0_k``."""
         return self._params[1::3]
 
     @property
     def sigma(self) -> np.ndarray:
+        """Return a view of Gaussian widths ``sigma_k``."""
         return self._params[2::3]
 
     def _validate_sigmas(self):
@@ -135,6 +153,7 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
         np.maximum(self._params[2::3], self._sigma_floor, out=self._params[2::3])
 
     def is_param_linear(self) -> np.ndarray:
+        """Return per-parameter linearity flags for ``[A, r0, sigma]`` blocks."""
         return np.tile(np.array([True, False, False], dtype=bool), self.n_gauss)
 
     # -------- core helpers --------
@@ -153,6 +172,7 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
 
     # -------- BasePotential API --------
     def value(self, r: np.ndarray) -> np.ndarray:
+        """Evaluate the summed unnormalized Gaussian energy at ``r``."""
         x, phi = self._xr_phi(r)
         out = (self.A * phi).sum(axis=-1)
         if np.isfinite(self.cutoff):
@@ -160,6 +180,7 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
         return out
 
     def force(self, r: np.ndarray) -> np.ndarray:
+        """Evaluate the summed scalar force ``-dU/dr`` at ``r``."""
         # F = -dV/dr = Σ 2 A x φ / σ^2
         x, phi = self._xr_phi(r)
         s = self.sigma
@@ -170,6 +191,7 @@ class UnnormalizedMultiGaussianPotential(BasePotential):
 
     # -------- zeros for cross-terms --------
     def zero(self, r: np.ndarray) -> np.ndarray:
+        """Return zeros shaped like ``r`` for cross-component second terms."""
         return np.zeros_like(np.asarray(r, dtype=float))
 
     # -------- dynamic derivative dispatch (mirrors multi_gaussian.py) --------

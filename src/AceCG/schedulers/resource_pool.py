@@ -34,6 +34,7 @@ class HostInventory:
 
     @property
     def n_cpus(self) -> int:
+        """Return the number of CPU cores available on this host."""
         return len(self.cpu_ids)
 
 
@@ -46,6 +47,7 @@ class CpuLease:
 
     @property
     def n_cpus(self) -> int:
+        """Return the number of CPU cores in this lease."""
         return len(self.cpu_ids)
 
     def taskset_arg(self) -> str:
@@ -104,9 +106,11 @@ class LeasePool:
         self._free[lease.host].sort()
 
     def free_total(self) -> int:
+        """Return the total number of currently free CPU cores."""
         return sum(len(c) for c in self._free.values())
 
     def max_free_on_any_host(self) -> int:
+        """Return the largest free-core count on any single host."""
         return max((len(c) for c in self._free.values()), default=0)
 
     def host_total(self, hostname: str) -> int:
@@ -389,6 +393,7 @@ class ResourcePool:
         )
 
     def build_lease_pool(self) -> LeasePool:
+        """Create a fresh lease pool from this resource inventory."""
         return LeasePool(self.hosts)
 
     def __repr__(self) -> str:

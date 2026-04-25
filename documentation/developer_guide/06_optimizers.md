@@ -1,136 +1,132 @@
-# 06 Optimizer 模块开发者参考
+# 06 Optimizer Module Developer Reference
 
 *Updated: 2026-04-23.*
 
-Optimizer 是 trainer 使用的参数更新引擎。它们拥有更新状态和带 mask 的参数步进。
-**不拥有** forcefield、compute runtime、帧统计或 workflow 控制。
+Optimizers are parameter-update engines used by trainers. They own update state and masked stepping. They do not own forcefields, compute runtime, frame statistics, or workflow control.
 
 ---
 
-## 核心模块
+## Core Modules
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `optimizers/base.py` | `BaseOptimizer`，共享 optimizer 合同 |
-| `optimizers/adam.py` | 带 mask 的 Adam optimizer |
-| `optimizers/adamW.py` | 带解耦 weight decay 的 AdamW optimizer |
-| `optimizers/rmsprop.py` | 带 mask 的 RMSprop optimizer |
-| `optimizers/newton_raphson.py` | 带 mask 的 Newton-Raphson optimizer |
-| `optimizers/multithreaded/adam.py` | 特殊多线程 Adam 变体（非主线导出）|
+| `optimizers/base.py` | `BaseOptimizer`, shared optimizer contract |
+| `optimizers/adam.py` | Masked Adam optimizer |
+| `optimizers/adamW.py` | AdamW with decoupled weight decay |
+| `optimizers/rmsprop.py` | Mask-aware RMSprop optimizer |
+| `optimizers/newton_raphson.py` | Masked Newton-Raphson optimizer |
+| `optimizers/multithreaded/adam.py` | Special multithreaded Adam variant; not exported on the main path |
 
-`AceCG.optimizers.__init__` 目前只重新导出单进程主线 optimizer。
+`AceCG.optimizers.__init__` currently re-exports only the main single-process optimizers.
 
 ---
 
-## 层边界
+## Layer Boundaries
 
-```
+```text
 trainer
-  → 计算 grad / hessian，决定是否调用 optimizer.step()
+  -> computes grad / hessian and decides whether to call optimizer.step()
 
 optimizer
-  → mutate 自己的参数向量 L 并返回 delta_L
+  -> mutates its own parameter vector L and returns delta_L
 
 forcefield / workflow
-  → 在 optimizer 外部；trainer 在 step 后同步它们
+  -> remain outside the optimizer; trainers synchronize them after a step
 ```
 
-**Optimizer 应该拥有**：
+An optimizer should own:
 
-- 当前扁平参数向量 `L`
+- the current flattened parameter vector `L`
 - trainable mask `mask`
-- 更新状态 buffer（如 moment、Hessian history）
-- 更新规则
+- update-state buffers, such as moments or Hessian history
+- the update rule
 
-**Optimizer 不应该拥有**：
+An optimizer should not own:
 
 - `Forcefield`
-- 参数 bounds
-- MPI 或 reducer 状态
-- 日志策略
-- batch 构建
+- parameter bounds
+- MPI or reducer state
+- logging policy
+- batch construction
 
 ---
 
-## 公开 Optimizer 接口
+## Public Optimizer Interface
 
-`AceCG.optimizers` 导出：
+`AceCG.optimizers` exports:
 
-| 符号 | 含义 |
+| Symbol | Meaning |
 |---|---|
-| `BaseOptimizer` | 抽象 optimizer 基类 |
-| `AdamMaskedOptimizer` | 一阶 Adam |
-| `AdamWMaskedOptimizer` | AdamW，解耦 weight decay |
-| `RMSpropMaskedOptimizer` | RMSprop，支持 mask |
-| `NewtonRaphsonOptimizer` | 二阶 Newton step |
+| `BaseOptimizer` | Abstract optimizer base class |
+| `AdamMaskedOptimizer` | First-order Adam |
+| `AdamWMaskedOptimizer` | AdamW with decoupled weight decay |
+| `RMSpropMaskedOptimizer` | Mask-aware RMSprop |
+| `NewtonRaphsonOptimizer` | Second-order Newton step |
 
 ---
 
-## `BaseOptimizer`（optimizers/base.py）
+## `BaseOptimizer`
 
-### 状态
+### State
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
-| `L` | 当前扁平参数向量 |
-| `mask` | boolean trainable mask，shape 与 `L` 相同 |
-| `lr` | 学习率 / 步长缩放参数 |
+| `L` | Current flattened parameter vector |
+| `mask` | Boolean trainable mask with the same shape as `L` |
+| `lr` | Learning rate / step scaling parameter |
 
-### 方法
+### Methods
 
-| 方法 | 含义 |
+| Method | Meaning |
 |---|---|
-| `__init__(L, mask, lr)` | 初始化参数向量、trainable mask 和学习率 |
-| `set_params(L_new)` | 替换内部参数向量 |
-| `state_dict()` | 序列化 optimizer 状态 |
-| `load_state_dict(state)` | 恢复 optimizer 状态 |
-| `step(grad, hessian=None)` | 抽象的单步更新 |
+| `__init__(L, mask, lr)` | Initialize parameter vector, trainable mask, and learning rate |
+| `set_params(L_new)` | Replace the internal parameter vector |
+| `state_dict()` | Serialize optimizer state |
+| `load_state_dict(state)` | Restore optimizer state |
+| `step(grad, hessian=None)` | Abstract single-step update |
 
-### 返回值约定
+### Return-Value Convention
 
-Optimizer 原地 mutate `self.L` 并返回全参数空间的变化量：
+Optimizers mutate `self.L` in place and return the change in the full parameter space:
 
 $$\Delta L = L_{\text{new}} - L_{\text{old}}$$
 
-- masked-out 的坐标返回 0
-- 梯度下降类 optimizer 通常返回负向量
-- trainer 代码可以直接从返回值记录 `update_norm`
+- masked-out coordinates return 0
+- gradient-descent optimizers usually return negative deltas
+- trainer code can log `update_norm` directly from the returned vector
 
 ---
 
-## Mask 语义
+## Mask Semantics
 
-所有当前 optimizer 都是 mask-aware：
+All current optimizers are mask-aware:
 
-- 只有 `mask == True` 的坐标被更新
-- masked-out 坐标保持不变
-- 返回的 delta 向量始终是全长度
+- only coordinates with `mask == True` are updated
+- masked-out coordinates remain unchanged
+- the returned delta vector always has full length
 
-示例：
+Example:
 
 ```python
 opt = AdamMaskedOptimizer(L0, mask=np.array([True, False, True]), lr=1e-2)
 delta = opt.step(grad)
-# opt.L[1] 不变，delta[1] == 0
+# opt.L[1] is unchanged, delta[1] == 0
 ```
 
-**重要**：`Forcefield.param_mask` / `key_mask` 是 trainability 的规范来源。
-Optimizer 在初始化时接收 mask 副本作为执行状态；
-workflow 不应把 `optimizer.mask` 当做独立的 source of truth。
+Important: `Forcefield.param_mask` and `Forcefield.key_mask` are the canonical source of trainability. Optimizers receive a mask copy at initialization for execution state; workflows should not treat `optimizer.mask` as an independent source of truth.
 
 ---
 
-## Hessian 合同
+## Hessian Contract
 
-只有部分 optimizer 消耗 Hessian。Trainer 通过 `BaseTrainer.optimizer_accepts_hessian()` 发现，
-后者检查 optimizer 的 `step()` 签名中是否有名为 `hessian` 的参数。
+Only some optimizers consume Hessians. Trainers discover this through `BaseTrainer.optimizer_accepts_hessian()`, which checks whether the optimizer's `step()` signature has a parameter named exactly `hessian`.
 
-**开发者规则**：
+Developer rules:
 
-- 若 optimizer 需要 Hessian，其 `step()` 签名**必须**包含 `hessian`
-- 否则 trainer 代码将其视为一阶 optimizer
+- if an optimizer needs Hessians, its `step()` signature must contain `hessian`
+- otherwise trainer code treats it as a first-order optimizer
 
-示例：
+Example:
 
 ```python
 def step(self, grad: np.ndarray, hessian: np.ndarray) -> np.ndarray:
@@ -139,47 +135,47 @@ def step(self, grad: np.ndarray, hessian: np.ndarray) -> np.ndarray:
 
 ---
 
-## 各 Optimizer 说明
+## Optimizer Notes
 
 ### `AdamMaskedOptimizer`
 
-内部状态：
+Internal state:
 
-- 一阶 moment `m`
-- 二阶 moment `v`
-- 步数计数器 `t`
-- 可选预条件高斯噪声
+- first moment `m`
+- second moment `v`
+- step counter `t`
+- optional preconditioned Gaussian noise
 
-更新规则：在 masked 坐标上执行标准 Adam；返回 `delta_L`。
+Update rule: standard Adam on masked coordinates, returning `delta_L`.
 
 ### `AdamWMaskedOptimizer`
 
-在 Adam 基础上增加：
+Adds to Adam:
 
-- 解耦 weight decay
-- 可选 AMSGrad 路径
-- 可选预条件高斯噪声
+- decoupled weight decay
+- optional AMSGrad path
+- optional preconditioned Gaussian noise
 
-当需要显式 weight decay 而非 L2-through-gradient 耦合时，使用这个。
+Use this when explicit decoupled weight decay is preferred over L2-through-gradient coupling.
 
 ### `RMSpropMaskedOptimizer`
 
-内部状态：
+Internal state:
 
-- 运行中的梯度平方均值
-- 可选 momentum buffer
-- 可选 centered RMSprop 状态
-- 可选噪声
+- running mean of squared gradients
+- optional momentum buffer
+- optional centered-RMSprop state
+- optional noise
 
-支持：masked 更新、可选 L2 风格 weight decay（在梯度中）、可选 momentum。
+Supports masked updates, optional L2-style weight decay through the gradient, and optional momentum.
 
 ### `NewtonRaphsonOptimizer`
 
-同时消耗梯度和 Hessian，在 active block 上计算带 mask 的 Newton step。
+Consumes both gradient and Hessian and computes a masked Newton step on the active block.
 
-是当前 Hessian-capable analytic trainer 使用的二阶路径。
+This is the current second-order path used by Hessian-capable analytic trainers.
 
-额外存储用于下游日志：
+Additional state for downstream logs:
 
 - `last_grad`
 - `last_hessian`
@@ -187,25 +183,25 @@ def step(self, grad: np.ndarray, hessian: np.ndarray) -> np.ndarray:
 
 ### `optimizers/multithreaded/adam.py`
 
-主线导出范围以外的特殊变体，视为实现细节扩展，不作为基准 optimizer 合同。
+A special variant outside the main export path. Treat it as an implementation extension rather than the baseline optimizer contract.
 
 ---
 
-## 状态序列化
+## State Serialization
 
-所有 optimizer 应支持：
+All optimizers should support:
 
 ```python
 state = opt.state_dict()
 opt.load_state_dict(state)
 ```
 
-基础字段：
+Base fields:
 
-| Key | 含义 |
+| Key | Meaning |
 |---|---|
-| `L` | 参数向量 |
-| `mask` | trainable mask |
-| `lr` | 学习率 |
+| `L` | Parameter vector |
+| `mask` | Trainable mask |
+| `lr` | Learning rate |
 
-子类在此基础上增加 moment buffer、计数器等内部状态。
+Subclasses add moment buffers, counters, and other internal state as needed.

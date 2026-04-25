@@ -374,12 +374,27 @@ class MPIComputeEngine:
         reduce: str,
         description: str = "",
     ) -> None:
+        """Register one frame-level compute function.
+
+        Parameters
+        ----------
+        name : str
+            Observable name used in compute requests.
+        fn : Callable
+            Function called as ``fn(geometry, forcefield, **kwargs)`` for each
+            frame.
+        reduce : {"sum", "gather", "stack", "dict_sum"}
+            Reduction mode used across frames/ranks.
+        description : str, default=""
+            Human-readable description for diagnostics.
+        """
         if reduce not in ("sum", "gather", "stack", "dict_sum"):
             raise ValueError(f"Invalid reduce mode: {reduce!r}")
         self._registry[name] = _RegisteredFn(fn=fn, reduce=reduce, desc=description)
 
     @property
     def registered_names(self) -> List[str]:
+        """Return names of observables currently registered on the engine."""
         return list(self._registry.keys())
 
     def compute(

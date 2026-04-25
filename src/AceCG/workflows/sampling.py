@@ -32,6 +32,8 @@ _BOLTZMANN_KCAL = 0.001987204  # kcal/(mol·K)
 
 @dataclass(frozen=True)
 class AAStats:
+    """All-atom reference derivative statistics for sampling workflows."""
+
     energy_grad: np.ndarray
     d2U: Optional[np.ndarray] = None
 
@@ -45,6 +47,21 @@ class AAStats:
         need_hessian: bool,
         label: str,
     ) -> "AAStats":
+        """Build AA statistics from a serialized payload.
+
+        Parameters
+        ----------
+        payload : dict
+            Source dictionary containing gradient and optional Hessian arrays.
+        grad_key : str
+            Key used to read the energy-gradient vector.
+        hess_key : str
+            Key used to read the Hessian matrix.
+        need_hessian : bool
+            Whether missing Hessian data should raise an error.
+        label : str
+            Human-readable label included in validation errors.
+        """
         if not isinstance(payload, dict):
             raise ValueError(f"{label} must be a dict, got {type(payload).__name__}.")
         if grad_key not in payload:

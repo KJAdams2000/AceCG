@@ -105,6 +105,7 @@ class MultiGaussianTableFitter(BaseTableFitter):
             setattr(self.cfg, k, v)
 
     def profile_name(self) -> str:
+        """Return this fitter's registry profile name."""
         return "multigaussian"
 
     def fit(self, table_path: str, typ1: str, typ2: str) -> MultiGaussianPotential:

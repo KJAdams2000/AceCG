@@ -90,6 +90,27 @@ class MultiTrainerAnalytic(BaseTrainer):
         logger=None,
         combine_mode: str = "update",
     ):
+        """Initialize a meta-trainer over several analytic sub-trainers.
+
+        Parameters
+        ----------
+        forcefield : Forcefield
+            Global forcefield copied into the meta-trainer.
+        optimizer : BaseOptimizer
+            Optimizer used for the combined parameter vector.
+        trainer_list : Sequence[BaseTrainer]
+            Non-empty sequence of already configured sub-trainers. Each
+            sub-trainer must use the same global parameter ordering.
+        weight_array : np.ndarray, shape (n_trainers,)
+            Linear weights applied to sub-trainer updates or gradients.
+        beta : float, optional
+            Optional inverse temperature stored for interface consistency.
+        logger : object, optional
+            Optional scalar logger exposing ``add_scalar``.
+        combine_mode : {"update", "grad"}, default="update"
+            ``"update"`` combines sub-trainer update vectors. ``"grad"``
+            combines dry-run gradients and applies one meta-optimizer step.
+        """
         super().__init__(forcefield, optimizer, beta, logger)
 
         assert isinstance(trainer_list, (list, tuple)) and len(trainer_list) > 0, (
@@ -223,27 +244,10 @@ class MultiTrainerAnalytic(BaseTrainer):
         Returns
         -------
         MultiOut
-            A dictionary with the following keys:
-
-            - ``"grad"`` :
-                The combined gradient with respect to the global parameter vector
-                ``L`` after applying trainer weights.
-
-            - ``"hessian"`` :
-                The combined Hessian matrix, if enabled and available; otherwise
-                ``None``.
-
-            - ``"update"`` :
-                The parameter update applied by the meta-optimizer.
-
-            - ``"sub_full"`` :
-                A list of full output dictionaries returned by each sub-trainer
-                ``step`` call.
-
-            - ``"sub_view"`` :
-                A list of filtered sub-trainer outputs containing only the keys
-                specified by ``return_keys_list`` (or the full outputs if
-                ``return_keys_list`` is ``None``).
+            Dictionary with ``mode``, combined ``update``, filtered sub-trainer
+            outputs under ``sub``, and diagnostics under ``meta``. In
+            ``combine_mode == "grad"``, the dictionary also includes
+            ``combined_grad`` and ``combined_hessian``.
 
         Notes
         -----
@@ -264,8 +268,8 @@ class MultiTrainerAnalytic(BaseTrainer):
 
         use_hessian = self.optimizer_accepts_hessian()
 
-        sub_full: List[Dict[str, Any]] = [] # full list of subtrainer output
-        sub_view: List[Dict[str, Any]] = [] # return list of subtrainer output
+        sub_full: List[Dict[str, Any]] = []  # full sub-trainer outputs
+        sub_view: List[Dict[str, Any]] = []  # returned full/filtered outputs
 
         # ----------------------------
         # Mode A: combine sub-updates
@@ -319,7 +323,7 @@ class MultiTrainerAnalytic(BaseTrainer):
         grads = []
         Hs = []
 
-        def _eval_one(args): # dry-run a trainer.step
+        def _eval_one(args):  # dry-run a trainer.step
             i, tr, b = args
             out_i = tr.step(b, apply_update=False)
             return i, out_i
@@ -414,7 +418,14 @@ class MultiTrainerAnalytic(BaseTrainer):
         }
 
     def set_lrs(self, lrs: Sequence[float]) -> None:
-        """Set per-trainer learning rates."""
+        """Set learning rates on all sub-trainer optimizers.
+
+        Parameters
+        ----------
+        lrs : Sequence[float]
+            One learning rate per sub-trainer, in the same order as
+            ``self.trainers``.
+        """
         assert isinstance(lrs, (list, tuple, np.ndarray)) and len(lrs) == len(self.trainers), (
             "lrs length must match the number of trainers"
         )

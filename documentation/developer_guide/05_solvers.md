@@ -1,83 +1,81 @@
-# 05 Solver 模块开发者参考
+# 05 Solver Module Developer Reference
 
 *Updated: 2026-04-23.*
 
-Solver 与 trainer 同层。它们消耗已累积的统计量，返回参数更新或闭合解。
-**不拥有** MPI 执行、帧提取或 cache lifetime。
+Solvers sit at the same layer as trainers. They consume accumulated statistics and return a parameter update or closed-form solution. They do not own MPI execution, frame extraction, or cache lifetime.
 
-当前 solver 接口：
+Current solver interface:
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `solvers/base.py` | `BaseSolver`，通用单次求解接口 |
-| `solvers/fm_matrix.py` | `FMMatrixSolver`，从标准 FM 统计做闭合求解 |
+| `solvers/base.py` | `BaseSolver`, shared one-shot solve interface |
+| `solvers/fm_matrix.py` | `FMMatrixSolver`, closed-form solve from standard FM statistics |
 
 ---
 
-## 层边界
+## Layer Boundaries
 
-```
+```text
 topology + compute
-  → Forcefield、reducer 输出（来自 run_post pickle）
+  -> Forcefield and reducer output from run_post pickle files
 
 solver
-  → 消耗一个 batch，求解，返回 dict
+  -> consumes one batch, solves, returns dict
 
 workflow / trainer
-  → 决定何时调用 solver、把求解结果发送到哪里
+  -> decides when to call solver and where to propagate the result
 ```
 
-**Solver 应该拥有**：
+A solver should own:
 
-- 求解配置
-- 一个私有 `Forcefield` 副本
-- 矩阵代数
+- solve configuration
+- a private `Forcefield` copy
+- matrix algebra
 
-**Solver 不应该拥有**：
+A solver should not own:
 
 - trajectory I/O
-- MPI engine 创建
-- 帧选择策略
+- MPI engine creation
+- frame-selection strategy
 - runtime cache
-- 训练循环控制
+- training-loop control
 
 ---
 
-## `BaseSolver`（solvers/base.py）
+## `BaseSolver`
 
-### 职责
+### Responsibilities
 
-| 方法 | 含义 |
+| Method | Meaning |
 |---|---|
-| `__init__(forcefield, logger=None)` | deep-copy 并拥有一个 `Forcefield` |
-| `schema()` | 描述 input/output dict 合同 |
-| `get_params()` | 返回当前全参数向量 |
-| `update_forcefield(params)` | 将全参数向量写回拥有的 `Forcefield` |
-| `solve(batch)` | 抽象的单次求解入口 |
+| `__init__(forcefield, logger=None)` | Deep-copy and own a `Forcefield` |
+| `schema()` | Describe the input/output dict contract |
+| `get_params()` | Return the current full parameter vector |
+| `update_forcefield(params)` | Write the full parameter vector back to the owned `Forcefield` |
+| `solve(batch)` | Abstract one-shot solve entry point |
 
-**新 solver 的设计规则**：
+Rules for new solvers:
 
-- 接受一个规范 batch dict
-- 返回一个 plain result dict
-- 在 shape 或合同不匹配时 fail-fast
-- 保持 workflow / training 关切在 solver 代码之外
+- accept a canonical batch dict
+- return a plain result dict
+- fail fast on shape or contract mismatches
+- keep workflow and training concerns outside solver code
 
 ---
 
-## `FMMatrixSolver`（solvers/fm_matrix.py）
+## `FMMatrixSolver`
 
-`FMMatrixSolver` 是规范的闭合形式 FM 求解器。
-消耗 `step_mode="fm"` 的 `run_post()` pickle 输出，一次调用完成求解。
+`FMMatrixSolver` is the canonical closed-form FM solver. It consumes the `step_mode="fm"` `run_post()` pickle output and solves in one call.
 
-### 支持模式
+### Supported Modes
 
-| Mode | 含义 |
+| Mode | Meaning |
 |---|---|
-| `ols` | 普通最小二乘 |
-| `ridge` | Tikhonov 正则化求解 |
-| `bayesian` | 对角 ARD Bayesian evidence 更新 |
+| `ols` | Ordinary least squares |
+| `ridge` | Tikhonov-regularized solve |
+| `bayesian` | Diagonal ARD Bayesian evidence updates |
 
-### 构建
+### Construction
 
 ```python
 from AceCG.solvers.fm_matrix import FMMatrixSolver
@@ -89,139 +87,132 @@ solver = FMMatrixSolver(
 )
 ```
 
-Solver 拥有独立的 `Forcefield` 副本。更新 solver 参数不 mutate 调用者的 forcefield，
-直到 workflow 选择传播结果。
+The solver owns an independent `Forcefield` copy. Updating solver parameters does not mutate the caller's forcefield until the workflow chooses to propagate the result.
 
 ---
 
-## FM solver batch 合同
+## FM Solver Batch Contract
 
-`FMMatrixSolver.solve(batch)` 期望标准 FM payload（来自 `run_post` pickle）：
+`FMMatrixSolver.solve(batch)` expects the standard FM payload from a `run_post` pickle:
 
-| Key | Shape | 含义 |
+| Key | Shape | Meaning |
 |---|---:|---|
-| `JtJ` | `(p, p)` | 归一化 FM 法矩阵 |
-| `Jty` | `(p,)` | 归一化 FM 右端向量 |
-| `y_sumsq` | scalar | 归一化目标力范数平方 |
-| `nframe` | scalar | 贡献帧数 |
-| `weight_sum` | scalar | 归一化前的总帧权重 |
-| `n_atoms_obs` | scalar | 每帧被观测原子数 |
+| `JtJ` | `(p, p)` | Normalized FM normal matrix |
+| `Jty` | `(p,)` | Normalized FM right-hand-side vector |
+| `y_sumsq` | scalar | Normalized target-force squared norm |
+| `nframe` | scalar | Number of contributing frames |
+| `weight_sum` | scalar | Total frame weight before normalization |
+| `n_atoms_obs` | scalar | Number of observed atoms per frame |
 
-可选传递字段：
+Optional fields:
 
-| Key | 含义 |
+| Key | Meaning |
 |---|---|
-| `step_index` | 存在时复制进 `result["meta"]` |
+| `step_index` | Copied into `result["meta"]` when present |
 
-### 结果合同
+### Result Contract
 
-| Key | 含义 |
+| Key | Meaning |
 |---|---|
-| `params` | 求解后的全参数向量 |
-| `loss` | 求解参数处的归一化 FM loss |
-| `mode` | 求解模式 |
-| `meta` | 诊断信息（active 参数数、Bayesian 统计等）|
+| `params` | Full solved parameter vector |
+| `loss` | Normalized FM loss at solved parameters |
+| `mode` | Solve mode |
+| `meta` | Diagnostics such as active-parameter count and Bayesian statistics |
 
 ---
 
-## FM 统计的科学合同
+## Scientific Contract for FM Statistics
 
-FM reducer 返回归一化二次统计量：
+The FM reducer returns normalized quadratic statistics:
 
-$$JtJ = \sum_i w_i J_i^T J_i,\quad Jty = \sum_i w_i J_i^T y_i,\quad y\_\text{sumsq} = \sum_i w_i y_i^T y_i$$
+$$JtJ = \sum_i w_i J_i^T J_i,\quad Jty = \sum_i w_i J_i^T y_i,\quad y_\text{sumsq} = \sum_i w_i y_i^T y_i$$
 
-其中归一化权重满足 $\sum_i w_i = 1$。
+where normalized weights satisfy $\sum_i w_i = 1$.
 
-Solver 直接使用：
+The solver uses:
 
-$$L(\theta) = \frac{1}{2}\left(\theta^T JtJ\, \theta - 2\,\theta^T Jty + y\_\text{sumsq}\right)$$
+$$L(\theta) = \frac{1}{2}\left(\theta^T JtJ\, \theta - 2\,\theta^T Jty + y_\text{sumsq}\right)$$
 
-Bayesian 模式下用 `weight_sum` 反推未归一化系统：
+In Bayesian mode, `weight_sum` is used to reconstruct the unnormalized system:
 
 $$JtJ_{\text{raw}} = \text{weight\_sum} \cdot JtJ,\quad Jty_{\text{raw}} = \text{weight\_sum} \cdot Jty$$
 
-有效标量观测数：
+Effective scalar observation count:
 
-$$N_{\text{obs}} = 3 \cdot n\_\text{atoms\_obs} \cdot \text{weight\_sum}$$
+$$N_{\text{obs}} = 3 \cdot n_\text{atoms\_obs} \cdot \text{weight\_sum}$$
 
-这就是 FM payload 中必须保留 `weight_sum` 和 `n_atoms_obs` 的原因。
+This is why `weight_sum` and `n_atoms_obs` must remain in the FM payload.
 
 ---
 
-## Mask 语义
+## Mask Semantics
 
-这是最重要的开发者合同。
+This is the most important developer contract for solvers.
 
-### 规则 1：计算全 FM 统计
+### Rule 1: Compute Full FM Statistics
 
-如果 solver 要冻结某些参数，compute 路径仍然必须产出完整的 `JtJ` 和 `Jty`，
-否则活跃参数和冻结参数之间的交叉项会丢失。
+Even if a solver freezes some parameters, the compute path must still produce the full `JtJ` and `Jty`. Otherwise, cross terms between active and frozen parameters are lost.
 
-实践中：
+In practice:
 
 ```python
 ff_compute = Forcefield(trainer.forcefield)
 ff_compute.param_mask = np.ones(ff_compute.n_params(), dtype=bool)
-# 用 ff_compute 作为 run_post spec 里的 forcefield
+# use ff_compute as the forcefield in the run_post spec
 ```
 
-### 规则 2：solver 内部应用 active mask
+### Rule 2: Apply Active Mask Inside the Solver
 
-`FMMatrixSolver` 从其拥有的 `Forcefield.param_mask` 读取 active mask。
+`FMMatrixSolver` reads the active mask from its owned `Forcefield.param_mask`.
 
-若 active index 为 `a`，frozen index 为 `f`，则在 shifted 系统上求解：
+If active indices are `a` and frozen indices are `f`, it solves the shifted system:
 
 $$JtJ_{aa}\,\theta_a = Jty_a - JtJ_{af}\,\theta_f$$
 
-这正确保留了非零冻结参数。
+This correctly preserves nonzero frozen parameters.
 
-### 规则 3：solver mode 不依赖 optimizer 对象
+### Rule 3: Solver Mode Does Not Depend on Optimizer Objects
 
-Workflow 可以把 `trainer.optimizer.mask` 镜像到 `solver.forcefield.param_mask`，
-但 solver 自身只依赖 `Forcefield.param_mask`。
+The workflow may mirror `trainer.optimizer.mask` into `solver.forcefield.param_mask`, but the solver itself depends only on `Forcefield.param_mask`.
 
 ---
 
-## 求解路径
+## Solve Paths
 
 ### OLS
 
-在 active block 上进行对角缩放的最小二乘求解。
+Performs diagonally scaled least-squares on the active block.
 
 ### Ridge
 
-求解：
+Solves:
 
 $$\left(JtJ_{aa} + \lambda I\right)\theta_a = Jty_a^*$$
 
-其中 $Jty_a^*$ 是上方的 shifted 右端向量。
+where $Jty_a^*$ is the shifted right-hand side described above.
 
 ### Bayesian
 
-在 active block 上进行对角 ARD 更新：
+Performs diagonal ARD updates on the active block:
 
-- 从 `weight_sum` 反推 raw 统计量
-- 使用 Cholesky 分解和三角求解（不构建稠密矩阵逆）
-- 在 `meta` 中报告收敛情况和后验超参数
+- reconstructs raw statistics from `weight_sum`
+- uses Cholesky factorization and triangular solves, not dense matrix inverse
+- reports convergence and posterior hyperparameters in `meta`
 
 ---
 
-## Workflow 最小调用模式
+## Minimal Workflow Call Pattern
 
 ```python
 import pickle
 
-# 1. 读取 run_post 输出的 FM pickle
 with open(spec_step["output_file"], "rb") as f:
     stats = pickle.load(f)
 
-# 2. 构建 solver（使用全 mask forcefield 做 compute，active mask 做 solve）
 ff_solve = copy.deepcopy(trainer.forcefield)
 solver = FMMatrixSolver(ff_solve, mode="ridge", ridge_alpha=alpha)
 
-# 3. 求解
 result = solver.solve(stats)
 
-# 4. 把求解结果传播回 trainer
 trainer.update_forcefield(result["params"])
 ```

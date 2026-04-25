@@ -1,177 +1,149 @@
 # 00 AceCG Software Architecture
 
-*Updated: 2026-04-23. 合并并扩展自 draw.md（2026-04-03）。*
+*Updated: 2026-04-23. Merged and expanded from draw.md (2026-04-03).*
 
-> 这是软件的总体架构文档，适合作为读代码的第一份参考。
+> This is the top-level architecture document for AceCG and is the recommended first document to read before diving into the code.
 
 ---
 
 ## Executive Summary
 
-AceCG 是一套 coarse-graining 力场训练系统，把 all-atom MD 轨迹作为输入，
-通过多种训练方法（REM、FM、CDREM、CDFM 等）迭代优化 CG 力场参数。
+AceCG is a coarse-graining force-field training system. It takes all-atom MD trajectories as input and iteratively optimizes CG force-field parameters through several training methods, including REM, FM, CDREM, CDFM, and VP growth.
 
-核心设计哲学：**每层只做自己的事，向上只暴露 stable API，向下只依赖直接下层。**
+Core design principle: **each layer owns only its own concerns, exposes stable APIs upward, and depends only on the layer directly below it.**
 
 ---
 
-## 层级总览
+## Layer Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  L6  Workflow                                                   │
-│      workflows/base.py · sampling.py · rem.py · cdrem.py       │
-│      fm.py · cdfm.py                                            │
-│      vp_growth.py (standalone VP growth producer)               │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────────┐
-│  L5  Scheduler / Task Runner                                    │
-│      schedulers/task_scheduler.py · task_runner.py             │
-│      resource_pool.py · mpi_backend.py · profiler.py           │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │ MPI task launch / pickle result
-┌──────────────────────▼──────────────────────────────────────────┐
-│  L4  Trainers / Solvers / Optimizers                            │
-│      trainers/analytic/{rem,mse,fm,cdrem,cdfm,multi}.py        │
-│      solvers/fm_matrix.py                                       │
-│      optimizers/{adam,adamW,rmsprop,newton_raphson}.py          │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │ batch dicts
-┌──────────────────────▼──────────────────────────────────────────┐
-│  L3  Compute Runtime                                            │
-│      compute/mpi_engine.py  (MPIComputeEngine, run_post)       │
-│      compute/frame_geometry.py · energy.py · force.py          │
-│      compute/reducers.py   (stateful pipeline reducers)        │
-│      compute/registry.py   (build_default_engine)              │
-│      analysis/rdf.py       (RDF/PDF post-processing)           │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │ TopologyArrays + Forcefield + frames
-┌──────────────────────▼──────────────────────────────────────────┐
-│  L2  I/O + Config                                               │
-│      io/trajectory.py · forcefield.py · coordinates.py        │
-│      io/tables.py · logger.py                                   │
-│      configs/parser.py · models.py · vp_config.py             │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │ TopologyArrays, Forcefield
-┌──────────────────────▼──────────────────────────────────────────┐
-│  L1  Topology / Forcefield                                      │
-│      topology/types.py      (InteractionKey)                   │
-│      topology/topology_array.py  (TopologyArrays)             │
-│      topology/forcefield.py (Forcefield)                       │
-│      topology/neighbor.py   (pair routing / exclusions)        │
-│      topology/mscg.py       (MS-CG topology helper)           │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────────┐
-│  L0  Potentials / Fitters                                       │
-│      potentials/{harmonic,bspline,gaussian,lj,...}.py          │
-│      fitters/{fit_bspline,fit_harmonic,fit_multi_gaussian}.py  │
-│      samplers/base.py · conditioned.py                         │
-└─────────────────────────────────────────────────────────────────┘
+```text
+L6  Workflow
+    workflows/base.py, sampling.py, rem.py, cdrem.py,
+    fm.py, cdfm.py, vp_growth.py
+
+L5  Scheduler / Task Runner
+    schedulers/task_scheduler.py, task_runner.py,
+    resource_pool.py, mpi_backend.py, profiler.py
+
+L4  Trainers / Solvers / Optimizers
+    trainers/analytic/{rem,mse,fm,cdrem,cdfm,multi}.py
+    solvers/fm_matrix.py
+    optimizers/{adam,adamW,rmsprop,newton_raphson}.py
+
+L3  Compute Runtime
+    compute/mpi_engine.py
+    compute/frame_geometry.py, energy.py, force.py
+    compute/reducers.py, registry.py
+    analysis/rdf.py
+
+L2  I/O + Config
+    io/trajectory.py, forcefield.py, coordinates.py
+    io/tables.py, logger.py
+    configs/parser.py, models.py, vp_config.py
+
+L1  Topology / Forcefield
+    topology/types.py, topology_array.py, forcefield.py
+    topology/neighbor.py, mscg.py
+
+L0  Potentials / Fitters / Samplers
+    potentials/{harmonic,bspline,gaussian,lj,...}.py
+    fitters/{fit_bspline,fit_harmonic,fit_multi_gaussian}.py
+    samplers/base.py, conditioned.py
 ```
 
 ---
 
-## 各层详细说明
+## Layer Details
 
-### L0：Potentials / Fitters / Samplers
+### L0: Potentials / Fitters / Samplers
 
-**不依赖任何其他 AceCG 模块**，是系统的叶子层。
+This layer does not depend on any other AceCG module. It is the leaf layer of the system.
 
-| 模块 | 职责 |
+| Module | Responsibility |
 |---|---|
-| `potentials/base.py` | `BasePotential` 抽象基类；`IteratePotentials` 遍历帮手 |
-| `potentials/harmonic.py` | 谐振 bonded / angle potential |
-| `potentials/bspline.py` | force-basis B-spline potential（所有参数线性） |
-| `potentials/gaussian.py` | 归一化 Gaussian pair potential |
-| `potentials/lj*.py` | LJ 12-6 / 9-6 / soft-core |
-| `potentials/multi_gaussian.py` | 归一化 multi-Gaussian family |
-| `fitters/fit_*.py` | 从 RDF/distribution 拟合初始参数 |
-| `samplers/base.py` | LAMMPS 脚本构建基类 |
-| `samplers/conditioned.py` | conditioned sampling 脚本构建 |
+| `potentials/base.py` | `BasePotential` abstract base class and `IteratePotentials` helper |
+| `potentials/harmonic.py` | Harmonic bonded / angle potential |
+| `potentials/bspline.py` | Force-basis B-spline potential; all parameters are linear |
+| `potentials/gaussian.py` | Normalized Gaussian pair potential |
+| `potentials/lj*.py` | LJ 12-6 / 9-6 / soft-core families |
+| `potentials/multi_gaussian.py` | Normalized multi-Gaussian family |
+| `fitters/fit_*.py` | Initial parameter fitting from RDF / distribution data |
+| `samplers/base.py` | Base LAMMPS script staging and replica planning |
+| `samplers/conditioned.py` | Conditioned sampling script support |
 
-**这层不拥有**：atom indexing、MPI、frame iteration、trainer 状态。
+This layer does not own atom indexing, MPI, frame iteration, or trainer state.
 
-标量力学约定：`F(r) = -dU/dr`，compute 层负责把标量 F 投影回
-Cartesian atom forces（通过 `FrameGeometry` 里的几何方向向量）。
+Scalar force convention:
 
----
+```text
+F(r) = -dU/dr
+```
 
-### L1：Topology / Forcefield
+The compute layer projects scalar forces back to Cartesian atom forces through the geometry direction vectors in `FrameGeometry`.
 
-核心三件套：
+### L1: Topology / Forcefield
 
-| 类 | 文件 | 职责 |
+The core objects are:
+
+| Class | File | Responsibility |
 |---|---|---|
-| `InteractionKey` | `topology/types.py` | 规范化的相互作用标识符 `NamedTuple(style, types)` |
-| `TopologyArrays` | `topology/topology_array.py` | 冻结的 MPI-broadcastable 拓扑快照 |
-| `Forcefield` | `topology/forcefield.py` | `MutableMapping[InteractionKey, List[BasePotential]]` + 参数向量缓存 |
+| `InteractionKey` | `topology/types.py` | Canonical interaction identifier, `NamedTuple(style, types)` |
+| `TopologyArrays` | `topology/topology_array.py` | Frozen, MPI-broadcastable topology snapshot |
+| `Forcefield` | `topology/forcefield.py` | `MutableMapping[InteractionKey, List[BasePotential]]` plus parameter-vector caches |
 
-**`InteractionKey` 规范化规则**：
+`InteractionKey` normalization rules:
 
-| style | 规则 | 例子 |
+| Style | Rule | Example |
 |---|---|---|
-| pair / bond | 字母序：`(a,b) if a ≤ b` | `pair("C","A")` → `("A","C")` |
-| angle | 反转如果 `a > c`：`(a,b,c) if a ≤ c else (c,b,a)` | `angle("Z","Y","A")` → `("A","Y","Z")` |
-| dihedral | 反转如果 `(a,b) > (d,c)` | `dihedral("D","C","B","A")` → `("A","B","C","D")` |
+| pair / bond | Lexicographic order: `(a, b) if a <= b` | `pair("C", "A")` -> `("A", "C")` |
+| angle | Reverse if `a > c`: `(a, b, c) if a <= c else (c, b, a)` | `angle("Z", "Y", "A")` -> `("A", "Y", "Z")` |
+| dihedral | Reverse if `(a, b) > (d, c)` | `dihedral("D", "C", "B", "A")` -> `("A", "B", "C", "D")` |
 
-**`TopologyArrays`** 由 `collect_topology_arrays(universe, ...)` 一次性构建，
-然后广播给所有 MPI rank。包含：
-- 原子级数组（names, types, masses, charges, atom_type_codes）
-- 成键项（bonds, angles, dihedrals）
-- 排除列表（exclude_12, exclude_13, exclude_14）
-- 虚位点分类（real_site_indices, virtual_site_mask）
-- 实例→类型映射（bond_key_index, keys_bondtypes 等）
+`TopologyArrays` is built once by `collect_topology_arrays(universe, ...)` and then broadcast to all MPI ranks. It contains atom-level arrays, bonded terms, exclusion lists, virtual-site classification, and instance-to-type mappings.
 
-**`Forcefield`** 是整个参数系统的 source of truth：
-- `param_array()` / `update_params(L)` 控制整个参数向量
-- `key_mask` / `param_mask` 控制哪些参数参与训练
-- `deepcopy()` / `copy.deepcopy()` 均安全（trainer、solver 各自拥有独立副本）
+`Forcefield` is the source of truth for parameters:
 
----
+- `param_array()` and `update_params(L)` control the complete flattened parameter vector.
+- `key_mask` and `param_mask` control which parameters participate in training.
+- `deepcopy()` and `copy.deepcopy()` are safe; trainers and solvers own independent copies.
 
-### L2：I/O + Config
+### L2: I/O + Config
 
-| 模块 | 职责 |
+| Module | Responsibility |
 |---|---|
-| `io/trajectory.py` | `iter_frames()` — unified trajectory reader，产出 `(frame_id, positions, box, forces)` |
-| `io/forcefield.py` | `ReadLmpFF` / `WriteLmpFF` — LAMMPS force field 读写 |
+| `io/trajectory.py` | `iter_frames()`, the unified trajectory reader yielding `(frame_id, positions, box, forces)` |
+| `io/forcefield.py` | `ReadLmpFF` / `WriteLmpFF`, LAMMPS force-field I/O |
 | `io/coordinates.py` | CG coordinate mapping helpers |
-| `io/coordinates_writers.py` | LAMMPS data 文件写入（含 topology 支持）|
-| `io/tables.py` | LAMMPS tabulated potential 读写 |
-| `io/logger.py` | 结构化日志 |
-| `configs/parser.py` | `.acg` 配置文件解析 |
-| `configs/models.py` | 配置数据类（`SchedulerConfig`、`WorkflowConfig` 等） |
-| `configs/vp_config.py` | VP 相关配置 |
+| `io/coordinates_writers.py` | LAMMPS data-file writing, including topology support |
+| `io/tables.py` | LAMMPS tabulated potential I/O |
+| `io/logger.py` | Structured screen logging |
+| `configs/parser.py` | `.acg` config parser |
+| `configs/models.py` | Config dataclasses such as `SchedulerConfig` and `WorkflowConfig` |
+| `configs/vp_config.py` | VP-related config models |
 
-重要运行时约定：
+Runtime conventions:
 
-- `iter_frames()` 是 compute engine 的统一 trajectory 入口
-- 拓扑由 task spec 显式提供，每次 `run_post()` 重建一次 `TopologyArrays`
-- 力场快照以 pickle 文件传递（`forcefield_path` 字段）
+- `iter_frames()` is the compute engine's unified trajectory entry point.
+- Topology is explicitly supplied by each task spec; each `run_post()` rebuilds `TopologyArrays`.
+- Force-field snapshots are passed through pickle files via `forcefield_path`.
 
-详见 [11_io_utilities.md](11_io_utilities.md)。
+See [11_io_utilities.md](11_io_utilities.md).
 
----
+### L3: Compute Runtime
 
-### L3：Compute Runtime
+This is the numerical core of the system. See [03_compute.md](03_compute.md) and [04_mpi_runtime.md](04_mpi_runtime.md).
 
-这是系统数值计算的核心。详见 [03_compute.md](03_compute.md) 和 [04_mpi_runtime.md](04_mpi_runtime.md)。
-
-**核心模块**：
-
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `compute/mpi_engine.py` | `MPIComputeEngine`、`FrameCache`、`TrajectoryCache`（legacy aliases: `FrameObservables`、`TrajectoryObservablesCache`） |
-| `compute/frame_geometry.py` | `FrameGeometry` — 不可变的 per-frame 几何视图 |
-| `compute/energy.py` | `energy()` 内核 |
-| `compute/force.py` | `force()` 内核 |
-| `compute/reducers.py` | 有状态 pipeline reducer（init/consume/finalize）|
-| `compute/registry.py` | `build_default_engine()` — 注册核心 observable |
-| `analysis/rdf.py` | RDF / PDF 分布函数计算 |
+| `compute/mpi_engine.py` | `MPIComputeEngine`, `FrameCache`, `TrajectoryCache`; legacy aliases: `FrameObservables`, `TrajectoryObservablesCache` |
+| `compute/frame_geometry.py` | `FrameGeometry`, an immutable per-frame geometry view |
+| `compute/energy.py` | `energy()` kernel |
+| `compute/force.py` | `force()` kernel |
+| `compute/reducers.py` | Stateful pipeline reducers: init / consume / finalize |
+| `compute/registry.py` | `build_default_engine()`, which registers core observables |
+| `analysis/rdf.py` | RDF / PDF distribution analysis |
 
-**三个持久 public API**：
+Stable public APIs:
 
 ```python
 FrameGeometry = compute_frame_geometry(positions, box, topology_arrays, ...)
@@ -179,191 +151,208 @@ energy_dict   = energy(geom, forcefield, return_grad=True, ...)
 force_dict    = force(geom, forcefield, return_grad=True, ...)
 ```
 
-**这层不拥有**：scheduler 策略、workflow orchestration、跨 task 的 trainer tally。
+This layer does not own scheduler policy, workflow orchestration, or trainer tallies across tasks.
 
----
+### L4: Trainers / Solvers / Optimizers
 
-### L4：Trainers / Solvers / Optimizers
-
-| 模块 | 职责 |
+| Module | Responsibility |
 |---|---|
-| `trainers/base.py` | `BaseTrainer` 抽象约定 |
-| `trainers/analytic/rem.py` | `REMTrainerAnalytic` — 能量梯度批次消耗 |
-| `trainers/analytic/fm.py` | `FMTrainerAnalytic` — 迭代 FM 批次消耗 |
-| `trainers/analytic/cdrem.py` | `CDREMTrainerAnalytic` — 潜变量 REM |
-| `trainers/analytic/cdfm.py` | `CDFMTrainerAnalytic` — 按 x 聚合的 CDFM |
-| `trainers/analytic/mse.py` | `MSETrainerAnalytic` — PMF 匹配 MSE |
-| `trainers/analytic/multi.py` | `MultiTrainerAnalytic` — 多子训练器组合 |
-| `solvers/fm_matrix.py` | `FMMatrixSolver` — 精确 FM 矩阵求解（OLS/ridge/Bayesian） |
-| `optimizers/adam.py` | 带 mask 的 Adam |
-| `optimizers/newton_raphson.py` | 二阶 Newton-Raphson |
+| `trainers/base.py` | `BaseTrainer` abstract contract |
+| `trainers/analytic/rem.py` | `REMTrainerAnalytic`, energy-gradient batch consumer |
+| `trainers/analytic/fm.py` | `FMTrainerAnalytic`, iterative FM batch consumer |
+| `trainers/analytic/cdrem.py` | `CDREMTrainerAnalytic`, latent-variable REM |
+| `trainers/analytic/cdfm.py` | `CDFMTrainerAnalytic`, CDFM aggregated by x |
+| `trainers/analytic/mse.py` | `MSETrainerAnalytic`, PMF-matching MSE |
+| `trainers/analytic/multi.py` | `MultiTrainerAnalytic`, multi-trainer composition |
+| `solvers/fm_matrix.py` | `FMMatrixSolver`, exact FM matrix solve: OLS / ridge / Bayesian |
+| `optimizers/adam.py` | Masked Adam |
+| `optimizers/newton_raphson.py` | Second-order Newton-Raphson |
 
-**所有 trainer 的 step 合同**：
+All trainers share the same step contract:
 
 ```python
 out = trainer.step(batch, apply_update=True)
 ```
 
-batch 由 workflow 构建，trainer 不重建 trajectory 状态。
+The workflow builds the batch. Trainers do not rebuild trajectory state.
 
----
+### L5: Scheduler
 
-### L5：Scheduler
+See [08_schedulers.md](08_schedulers.md).
 
-详见 [08_schedulers.md](08_schedulers.md)。
+The scheduler has three layers:
 
-三层设计：资源发现 → 贪心分配 → MPI 命令组装。
-
-Workflow 只需：`TaskScheduler.run_iteration(xz_tasks, zbx_tasks)` → 返回 `list[TaskResult]`。
-
----
-
-### L6：Workflow
-
-Workflow 是 orchestration 层，应尽量薄。
-
-| 文件 | 职责 |
-|---|---|
-| `workflows/base.py` | `BaseWorkflow`、CLI override helpers、topology / optimizer / resource builders |
-| `workflows/sampling.py` | `SamplingWorkflow`、AA 统计、forcefield staging、sampler / scheduler 构建 |
-| `workflows/rem.py` | REM workflow |
-| `workflows/cdrem.py` | CDREM workflow（xz 阶段 + zbx 阶段） |
-| `workflows/fm.py` | FM workflow（iterative trainer 或闭式 solver） |
-| `workflows/cdfm.py` | CDFM workflow（zbx only；`cdfm_zbx` 内含 `y_eff` 预处理）|
-| `workflows/vp_growth.py` | standalone VP growth workflow（一次性数据生产） |
-
-详见 [09_workflows.md](09_workflows.md) 和 [10_vp_grower.md](10_vp_grower.md)。
-
-**合法 workflow 应该做的**：
-
-- 决定启动哪些 task
-- 调用 `trainer.step(batch)` 或 `solver.solve(batch)`
-- 读取 compute task 输出的 pickle
-- 组装合法的 batch dict
-- 管理 iteration 计数和 checkpoint
-
-**合法 workflow 不应该做的**：
-
-- 直接调用 reducers 作为主要生产路径
-- 自己拥有 MPI broadcast、frame slicing、cache lifetime
-- 复现 compute 侧的聚合逻辑（哪怕 legacy helper 存在）
-
----
-
-## 完整数据流图
-
+```text
+resource discovery -> greedy placement -> MPI command assembly
 ```
-AA 轨迹 (.lammpstrj)
-         │
-         ▼
+
+The workflow only needs:
+
+```python
+TaskScheduler.run_iteration(xz_tasks, zbx_tasks)  # returns list[TaskResult]
+```
+
+### L6: Workflows
+
+See [09_workflows.md](09_workflows.md).
+
+Workflows own iteration directories, checkpoints, task planning, force-field snapshots, and calls into trainers or solvers. They should not duplicate reducer math or own MPI frame slicing.
+
+---
+
+## End-to-End Training Flow
+
+Typical REM / CDREM / CDFM flow:
+
+```text
+.acg config
+  -> workflow parses config
+  -> topology and forcefield snapshots are built
+  -> scheduler launches simulation and post-processing tasks
+  -> compute runtime writes reducer pickle payloads
+  -> workflow builds trainer batches
+  -> trainer.step(...) updates its owned forcefield and optimizer
+  -> workflow propagates the new forcefield into the next iteration
+```
+
+Typical FM flow:
+
+```text
+.acg config
+  -> FMWorkflow builds FM forcefield
+  -> task_runner.run_post(...) accumulates step_mode="fm" statistics
+  -> either FMTrainerAnalytic.step(...) iterates
+     or FMMatrixSolver.solve(...) performs a closed-form solve
+  -> tables are exported for LAMMPS
+```
+
+---
+
+## Complete Data Flow
+
+```text
+AA trajectory (.lammpstrj)
+         |
+         v
   io/trajectory.py
   iter_frames(trajectory, topology)
-         │
-         │ (frame_id, positions, box, forces)
-         ▼
+         |
+         | (frame_id, positions, box, forces)
+         v
   compute/mpi_engine.py
   MPIComputeEngine.run_post(spec)
-    ├── rank 0: 加载 forcefield、Universe、TopologyArrays、sel_indices
-    ├── MPI broadcast: Universe, TopologyArrays, sel_indices
-    ├── 每个 rank 分到一段连续帧
-    ├── iter_frames → 本地帧序列
-    └── for each step in spec["steps"]:
-           │
-           ├── step_mode="rem"  → reducers.init_rem_state / consume_rem_frame
-           ├── step_mode="fm"   → reducers.init_fm_state  / consume_fm_frame
-           ├── step_mode="cdrem"→ 同 rem
-           ├── step_mode="cdfm_zbx"   → reducers.init_cdfm_zbx_state / ...
-           │                             （rank 0 先算一次 y_eff）
-           └── step_mode="rdf"        → analysis/rdf.py (不进 one-pass pipeline)
-                    │
-                    │ local partials
-                    ▼
+    +-- rank 0: load forcefield, Universe, TopologyArrays, sel_indices
+    +-- MPI broadcast: Universe, TopologyArrays, sel_indices
+    +-- each rank receives a contiguous frame segment
+    +-- iter_frames -> local frame sequence
+    +-- for each step in spec["steps"]:
+           |
+           +-- step_mode="rem"       -> reducers.init_rem_state / consume_rem_frame
+           +-- step_mode="fm"        -> reducers.init_fm_state / consume_fm_frame
+           +-- step_mode="cdrem"     -> same reducer path as rem
+           +-- step_mode="cdfm_zbx"  -> reducers.init_cdfm_zbx_state / ...
+           |                           rank 0 computes y_eff first
+           +-- step_mode="rdf"       -> analysis/rdf.py, outside one-pass pipeline
+                    |
+                    | local partials
+                    v
          comm.reduce / comm.gather (rank 0)
-                    │
-                    ▼
-         finalize_*_root → pickle output
-                    │
-         ┌──────────▼──────────────┐
-         │   trainer batch dict    │
-         └──────────┬──────────────┘
-                    │
-                    ▼
+                    |
+                    v
+         finalize_*_root -> pickle output
+                    |
+         +----------v-------------+
+         | trainer batch dict     |
+         +----------+-------------+
+                    |
+                    v
          trainer.step(batch)
-           ├── compute gradient ∇L
-           ├── (optionally) compute Hessian H
-           └── optimizer.step(grad, hessian) → ΔL
-                    │
-                    ▼
-         forcefield.update_params(L + ΔL)
-                    │
-                    ▼
-         checkpoint 保存
-         下一 iteration
+           +-- compute gradient
+           +-- optionally compute Hessian
+           +-- optimizer.step(grad, hessian) -> delta_L
+                    |
+                    v
+         forcefield.update_params(L + delta_L)
+                    |
+                    v
+         save checkpoint
+         next iteration
 ```
 
 ---
 
-## 核心类依赖图
+## Core Class Dependency Graph
 
-```
+```text
 InteractionKey
-    ├── TopologyArrays (持有 bond_key_index, keys_bondtypes 等)
-    └── Forcefield (key → List[BasePotential])
+    +-- TopologyArrays (owns bond_key_index, keys_bondtypes, ...)
+    +-- Forcefield (key -> List[BasePotential])
 
 BasePotential
-    └── Forcefield
+    +-- Forcefield
 
 TopologyArrays + Forcefield + positions/box
-    └── FrameGeometry (compute_frame_geometry)
-            ├── energy(geom, ff) → {energy, energy_grad, ...}
-            └── force(geom, ff)  → {force, force_grad, fm_stats}
+    +-- FrameGeometry (compute_frame_geometry)
+            +-- energy(geom, ff) -> {energy, energy_grad, ...}
+            +-- force(geom, ff)  -> {force, force_grad, fm_stats}
 
 MPIComputeEngine
-    ├── 拥有: MPI comm, _registry
-    ├── compute(request, frame, ...) → local observable dict
-    └── run_post(spec) → pickle files
-            └── 使用: reducers.py pipeline (init/consume/finalize)
+    +-- owns: MPI comm, _registry
+    +-- compute(request, frame, ...) -> local observable dict
+    +-- run_post(spec) -> pickle files
+            +-- uses reducers.py pipeline (init/consume/finalize)
 
 reducers.py
-    ├── 输入: engine.compute() 结果 + topology + forcefield
-    └── 输出: 本地 partial dicts（供 MPI reduce 使用）
+    +-- input: engine.compute() result + topology + forcefield
+    +-- output: local partial dicts for MPI reduce
 
 trainer.step(batch)
-    ├── 输入: workflow 组装的 batch dict（来自 pickle）
-    ├── 计算: ∇L, H（可选）
-    └── 输出: optimizer.step(grad) → ΔL → forcefield 更新
+    +-- input: workflow-built batch dict from pickle output
+    +-- computes: gradient and optional Hessian
+    +-- output: optimizer.step(grad) -> delta_L -> forcefield update
 
 workflow / scheduler
-    └── orchestrate 以上，但不吸收其内部逻辑
+    +-- orchestrate the above without absorbing their internals
 ```
 
 ---
 
-## 实际代码阅读顺序
+## Suggested Code Reading Order
 
-如果需要快速理解当前 runtime，按以下顺序读：
+For a quick understanding of the current runtime, read in this order:
 
-1. `topology/types.py` — `InteractionKey`
-2. `topology/topology_array.py` — `TopologyArrays`、`collect_topology_arrays()`
-3. `topology/forcefield.py` — `Forcefield`、参数向量 API
-4. `compute/frame_geometry.py` — `FrameGeometry`、`compute_frame_geometry()`
-5. `compute/registry.py` — `build_default_engine()`、注册了哪些 observable
-6. `compute/mpi_engine.py` — `MPIComputeEngine.compute()`、`run_post()`
-7. `compute/reducers.py` — init/consume/finalize pipeline API
-8. `trainers/analytic/*.py` — 各 trainer 的 batch 合同和 step() 实现
-9. `solvers/fm_matrix.py` — 矩阵 FM 求解
-10. `schedulers/task_runner.py` — 计算节点上发生了什么
-11. `workflows/base.py` — checkpoint、iteration loop 基础设施
+1. `topology/types.py` - `InteractionKey`
+2. `topology/topology_array.py` - `TopologyArrays`, `collect_topology_arrays()`
+3. `topology/forcefield.py` - `Forcefield` and parameter-vector APIs
+4. `compute/frame_geometry.py` - `FrameGeometry`, `compute_frame_geometry()`
+5. `compute/registry.py` - `build_default_engine()` and registered observables
+6. `compute/mpi_engine.py` - `MPIComputeEngine.compute()` and `run_post()`
+7. `compute/reducers.py` - init / consume / finalize pipeline API
+8. `trainers/analytic/*.py` - trainer batch contracts and `step()` implementations
+9. `solvers/fm_matrix.py` - matrix FM solver
+10. `schedulers/task_runner.py` - what happens on the compute node
+11. `workflows/base.py` - checkpoint and iteration-loop infrastructure
 
 ---
 
-## 重要设计边界
+## Important Design Boundaries
 
-| 关系 | 允许 | 禁止 |
+| Relationship | Allowed | Forbidden |
 |---|---|---|
-| workflow → compute | 调用 `MPIComputeEngine.run_post()`，消耗 pickle | 直接调用 reducer，自己做 MPI reduce |
-| workflow → trainer | 构建 batch，调用 `trainer.step()` | 复现 trainer 内部的梯度计算 |
-| trainer → compute | 无（trainer 不创建 compute engine）| 调用 `run_post()`，创建 `MPIComputeEngine` |
-| scheduler → compute | 启动 `mpi_engine` 子进程（`task_runner`）| 直接实例化 `MPIComputeEngine` |
-| reducer → compute | 调用 `engine.compute()` 本地 | 读轨迹，MPI broadcast，写输出文件 |
-| 所有层 → topology | import `InteractionKey`、`TopologyArrays`、`Forcefield` | 不可反向依赖 |
+| workflow -> compute | Call `MPIComputeEngine.run_post()` and consume pickle output | Call reducers directly or perform MPI reduce in workflow code |
+| workflow -> trainer | Build a batch and call `trainer.step()` | Reproduce gradient calculations from inside trainers |
+| trainer -> compute | None; trainers do not create compute engines | Call `run_post()` or create `MPIComputeEngine` |
+| scheduler -> compute | Launch `mpi_engine` subprocesses through `task_runner` | Instantiate `MPIComputeEngine` directly |
+| reducer -> compute | Call local `engine.compute()` | Read trajectories, broadcast with MPI, or write output files |
+| all layers -> topology | Import `InteractionKey`, `TopologyArrays`, `Forcefield` | Reverse dependencies back into topology |
+
+---
+
+## Cross-Layer Rules
+
+1. Potentials know only scalar coordinates and local parameters.
+2. Topology owns atom identity, bonded structure, exclusions, and force-field masks.
+3. Compute owns per-frame geometry, force/energy evaluation, and reducer accumulation.
+4. Trainers and solvers consume prebuilt statistics; they do not read trajectories.
+5. Scheduler owns process placement and launch mechanics only.
+6. Workflows own orchestration and persistence, but not numerical kernels.

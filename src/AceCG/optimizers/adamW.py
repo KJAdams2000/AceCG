@@ -2,18 +2,35 @@ import numpy as np
 from .base import BaseOptimizer
 
 class AdamWMaskedOptimizer(BaseOptimizer):
-    """
-    AdamW optimizer with masked parameter updates (decoupled weight decay).
+    """AdamW optimizer with masked parameter updates.
 
-    - Matches the interface/usage of AdamMaskedOptimizer.
-    - Only indices where mask==True are updated.
-    - Decoupled weight decay: L <- L - lr * weight_decay * L (on masked entries).
-    - Optional preconditioned Gaussian noise (same as your Adam version).
-    - Optional AMSGrad variant.
+    Parameters
+    ----------
+    L : np.ndarray
+        Initial full parameter vector.
+    mask : np.ndarray
+        Boolean mask selecting trainable entries of ``L``.
+    lr : float, default=1e-2
+        AdamW learning rate.
+    beta1 : float, default=0.9
+        Exponential decay rate for the first moment estimate.
+    beta2 : float, default=0.999
+        Exponential decay rate for the second moment estimate.
+    eps : float, default=1e-8
+        Numerical stability term added to the variance denominator.
+    weight_decay : float, default=0.0
+        Decoupled weight-decay coefficient applied only to active entries.
+    amsgrad : bool, default=False
+        If ``True``, use the AMSGrad maximum-variance denominator.
+    noise_sigma : float, default=0.0
+        Standard deviation of optional preconditioned Gaussian noise.
+    seed : int or None, optional
+        Seed for reproducible optimizer noise.
 
-    References:
-      - torch.optim.AdamW: decoupled weight decay (does not accumulate into moments). 
-      - Loshchilov & Hutter (AdamW): "Decoupled Weight Decay Regularization".
+    Notes
+    -----
+    The returned update follows AceCG's convention: it is the signed parameter
+    displacement applied to ``L`` (negative for a standard descent step).
     """
 
     def __init__(
@@ -107,6 +124,7 @@ class AdamWMaskedOptimizer(BaseOptimizer):
         return self.last_update
 
     def state_dict(self) -> dict:
+        """Return optimizer state including AdamW moments and hyperparameters."""
         d = super().state_dict()
         d.update({
             "t": int(self.t),
@@ -123,6 +141,13 @@ class AdamWMaskedOptimizer(BaseOptimizer):
         return d
 
     def load_state_dict(self, state: dict) -> None:
+        """Restore AdamW state from a compatible state dictionary.
+
+        Parameters
+        ----------
+        state : dict
+            Dictionary produced by :meth:`state_dict`.
+        """
         super().load_state_dict(state)
         self.t = int(state["t"])
         self.m = np.asarray(state["m"], dtype=self.L.dtype)

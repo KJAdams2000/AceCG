@@ -116,10 +116,12 @@ class BaseSampler:
 
     @property
     def script_info(self) -> ScriptInfo:
+        """Return parsed metadata for the sampler input script."""
         return self._script_info
 
     @property
     def replay_pool(self) -> list[Path]:
+        """Return checkpoint/data files available for replay initialization."""
         return list(self._replay_pool)
 
     def state_dict(self) -> Dict[str, Any]:

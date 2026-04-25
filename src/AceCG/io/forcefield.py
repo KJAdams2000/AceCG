@@ -128,7 +128,20 @@ def ReadLmpFFMask(
 ) -> Any:
     """Read an AceCG forcefield-mask file.
 
-    ``ReadLmpFFMask(path, pair_style, pair_typ_sel=...)``
+    Parameters
+    ----------
+    file : str
+        Path to the mask file.
+    pair_style : str
+        LAMMPS pair style in the source forcefield file. Use ``"hybrid"`` for
+        hybrid pair coefficient lines.
+    pair_typ_sel : list[str], optional
+        Pair sub-styles to include when ``pair_style="hybrid"``.
+
+    Returns
+    -------
+    ForcefieldMaskSpec
+        Parsed mask entries grouped by :class:`InteractionKey`.
     """
     from ..configs.models import ForcefieldMaskSpec
 
@@ -149,7 +162,36 @@ def ReadLmpFF(
     table_fit_overrides: Optional[dict] = None,
     topology_arrays: Optional[Any] = None,
 ):
-    """Read a LAMMPS-style force-field file into the unified forcefield container."""
+    """Read a LAMMPS-style forcefield file.
+
+    Parameters
+    ----------
+    file : str
+        Input LAMMPS forcefield/include file containing ``*_coeff`` lines.
+    pair_style : str
+        Active pair style, or ``"hybrid"`` when pair coefficient lines include
+        per-pair sub-style names.
+    pair_typ_sel : list[str], optional
+        Hybrid sub-styles to read. Ignored for non-hybrid pair styles.
+    cutoff : float, optional
+        Cutoff appended to pair potential constructors when the coefficient
+        line does not carry it explicitly.
+    global_var : dict, optional
+        Global variables required by some LAMMPS styles, such as
+        ``lj/cut/soft``.
+    table_fit : str, default="multigaussian"
+        Registered table fitter used when reading ``table`` coefficients.
+    table_fit_overrides : dict, optional
+        Extra keyword arguments passed to the table fitter.
+    topology_arrays : object, optional
+        Topology metadata used to translate numeric bonded/pair type ids into
+        canonical :class:`InteractionKey` values.
+
+    Returns
+    -------
+    Forcefield
+        Unified AceCG forcefield container.
+    """
     assert pair_style is not None
     if pair_style != "hybrid":
         pair_typ_sel = None
@@ -268,7 +310,24 @@ def WriteLmpFF(
     pair_typ_sel: Optional[List[str]] = None,
     topology_arrays: Optional[Any] = None,
 ):
-    """Write updated parameters back to a LAMMPS-style force-field file."""
+    """Write forcefield parameters into a LAMMPS-style coefficient file.
+
+    Parameters
+    ----------
+    old_file : str
+        Source coefficient/include file whose structure is preserved.
+    new_file : str
+        Destination file path.
+    forcefield : Forcefield
+        Forcefield containing updated parameters.
+    pair_style : str
+        Active pair style, or ``"hybrid"`` for hybrid coefficient lines.
+    pair_typ_sel : list[str], optional
+        Hybrid sub-styles to write. Ignored for non-hybrid pair styles.
+    topology_arrays : object, optional
+        Topology metadata used to translate numeric type ids into canonical
+        :class:`InteractionKey` values.
+    """
     assert pair_style is not None
     if pair_style != "hybrid":
         pair_typ_sel = None
