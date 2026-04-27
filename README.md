@@ -16,7 +16,11 @@ Use a compute node for MPI, LAMMPS, production runs, and long test suites.
 
 ## Latest update
 
-- 04/24/2026: Synced all architectural updates to the current repo. See the developer guide for all details. AceCG is now with MPI CPU support, multitask scheduling, unified topology management, parallelized compute backends, config file parsing, command-line interface, etc.
+- 04/26/2026, Ace: Updated MSETrainerAnalytic and MultiTrainerAnalytic.
+
+- 04/25/2026, Ace: Updated documentations
+
+- 04/24/2026, Weizhi: Synced all architectural updates to the current repo. See the developer guide for all details. AceCG is now with MPI CPU support, multitask scheduling, unified topology management, parallelized compute backends, config file parsing, command-line interface, etc.
 
 ## Developer Team
 
