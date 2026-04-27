@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import pickle
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 
@@ -14,6 +16,144 @@ except ImportError:  # Python < 3.11
 
 from ..base import BaseTrainer
 from .rem import EnsembleBatch
+
+
+def _load_array_file(path: Path, *, preferred_keys: Sequence[str]) -> np.ndarray:
+    """Load a single array from .npy/.npz, using preferred keys for .npz files."""
+    suffix = path.suffix.lower()
+    if suffix == ".npy":
+        return np.load(path, allow_pickle=False)
+    if suffix == ".npz":
+        with np.load(path, allow_pickle=False) as payload:
+            files = list(payload.files)
+            for key in preferred_keys:
+                if key in files:
+                    return payload[key]
+            if len(files) == 1:
+                return payload[files[0]]
+            raise ValueError(
+                f"{path} must contain exactly one array or one of: "
+                + ", ".join(repr(key) for key in preferred_keys)
+            )
+    raise ValueError(f"{path} must be a .npy or .npz file, got suffix {path.suffix!r}.")
+
+
+def load_reweighted_mse_stacks(
+    bin_idx_frame_paths: Sequence[str | Path],
+    energy_grad_frame_paths: Sequence[str | Path],
+    frame_weight_paths: Sequence[str | Path],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load and concatenate frame-level MSE data from multiple windows.
+
+    Parameters
+    ----------
+    bin_idx_frame_paths
+        Ordered sequence of ``bin_idx_CG_frame.npy`` / ``.npz`` files. Each file
+        must contain one bin-index vector of shape ``(n_frames,)``.
+    energy_grad_frame_paths
+        Ordered sequence of pickle files produced by ``run_post`` with
+        ``reduce_stack=True``. Each file must contain an ``energy_grad_frame``
+        array of shape ``(n_frames, n_params)``.
+    frame_weight_paths
+        Ordered sequence of ``CG_FrameWeight.npy`` / ``.npz`` files containing
+        one frame-weight vector per window.
+
+    Returns
+    -------
+    CG_bin_idx_frame : np.ndarray
+        Concatenated integer bin index per frame with shape
+        ``(sum_i n_frames_i,)``.
+    energy_grad_frame : np.ndarray
+        Concatenated per-frame energy-gradient stack with shape
+        ``(sum_i n_frames_i, n_params)``.
+    frame_weight : np.ndarray
+        Concatenated frame weights with shape ``(sum_i n_frames_i,)``.
+    """
+    bin_paths = [Path(path) for path in bin_idx_frame_paths]
+    grad_paths = [Path(path) for path in energy_grad_frame_paths]
+    weight_paths = [Path(path) for path in frame_weight_paths]
+    n_windows = len(grad_paths)
+    if len(bin_paths) != n_windows or len(weight_paths) != n_windows:
+        raise ValueError(
+            "bin_idx_frame_paths, energy_grad_frame_paths, and frame_weight_paths "
+            "must have the same length; got "
+            f"{len(bin_paths)}, {len(grad_paths)}, and {len(weight_paths)}."
+        )
+    if not grad_paths:
+        raise ValueError("At least one window path set is required.")
+
+    bin_blocks: list[np.ndarray] = []
+    grad_blocks: list[np.ndarray] = []
+    weight_blocks: list[np.ndarray] = []
+    n_params_ref: Optional[int] = None
+
+    for bin_path, grad_path, weight_path in zip(bin_paths, grad_paths, weight_paths):
+        with open(grad_path, "rb") as handle:
+            payload = pickle.load(handle)
+        if "energy_grad_frame" not in payload:
+            raise KeyError(
+                f"{grad_path} does not contain 'energy_grad_frame'. "
+                "Expected a reduce_stack=True post-processing output."
+            )
+        grad_frame = np.asarray(payload["energy_grad_frame"], dtype=np.float64)
+        if grad_frame.ndim != 2:
+            raise ValueError(
+                f"{grad_path} energy_grad_frame must be 2-D (n_frames, n_params); "
+                f"got shape {grad_frame.shape}."
+            )
+        if n_params_ref is None:
+            n_params_ref = int(grad_frame.shape[1])
+        elif grad_frame.shape[1] != n_params_ref:
+            raise ValueError(
+                "All energy_grad_frame arrays must have the same n_params. "
+                f"Expected {n_params_ref}, got {grad_frame.shape[1]} in {grad_path}."
+            )
+
+        bin_idx_raw = _load_array_file(
+            bin_path,
+            preferred_keys=("CG_bin_idx_frame", "bin_idx_CG_frame", "bin_idx"),
+        )
+        bin_idx = np.asarray(bin_idx_raw).reshape(-1)
+        if not np.issubdtype(bin_idx.dtype, np.integer):
+            if not np.all(np.isfinite(bin_idx)) or not np.all(bin_idx == np.floor(bin_idx)):
+                raise ValueError(f"{bin_path} must contain integer bin indices.")
+        bin_idx_arr = bin_idx.astype(np.int64, copy=False)
+
+        weight_raw = _load_array_file(
+            weight_path,
+            preferred_keys=("frame_weight", "CG_FrameWeight", "FrameWeight"),
+        )
+        weight_arr = np.asarray(weight_raw, dtype=np.float64).reshape(-1)
+
+        n_frames = int(grad_frame.shape[0])
+        if bin_idx_arr.size != n_frames:
+            raise ValueError(
+                f"{bin_path} length must match n_frames in {grad_path}: "
+                f"got {bin_idx_arr.size} vs {n_frames}."
+            )
+        if weight_arr.size != n_frames:
+            raise ValueError(
+                f"{weight_path} length must match n_frames in {grad_path}: "
+                f"got {weight_arr.size} vs {n_frames}."
+            )
+        if not np.all(np.isfinite(weight_arr)):
+            raise ValueError(f"{weight_path} contains non-finite frame weights.")
+        if np.any(weight_arr < 0.0):
+            raise ValueError(f"{weight_path} contains negative frame weights.")
+
+        bin_blocks.append(bin_idx_arr)
+        grad_blocks.append(grad_frame)
+        weight_blocks.append(weight_arr)
+
+    frame_weight = np.concatenate(weight_blocks, axis=0)
+    if float(np.sum(frame_weight)) <= 0.0:
+        raise ValueError("Concatenated frame weights must have a positive sum.")
+
+    return (
+        np.concatenate(bin_blocks, axis=0),
+        np.concatenate(grad_blocks, axis=0),
+        frame_weight,
+    )
 
 
 # -----------------------------------------------------------------------------

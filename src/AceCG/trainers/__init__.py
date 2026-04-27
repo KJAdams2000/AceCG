@@ -7,6 +7,7 @@ from .analytic import (
     MSETrainerAnalytic,
     MultiTrainerAnalytic,
     REMTrainerAnalytic,
+    load_reweighted_mse_stacks,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "MSETrainerAnalytic",
     "MultiTrainerAnalytic",
     "REMTrainerAnalytic",
+    "load_reweighted_mse_stacks",
 ]

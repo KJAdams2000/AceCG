@@ -6,6 +6,7 @@ AceCG: A Python package for bottom-up coarse-graining.
 from .trainers.analytic import REMTrainerAnalytic
 from .trainers.analytic import load_reweighted_rem_stacks
 from .trainers.analytic import MSETrainerAnalytic
+from .trainers.analytic import load_reweighted_mse_stacks
 from .trainers.analytic import CDREMTrainerAnalytic
 from .trainers.analytic import MultiTrainerAnalytic
 from .trainers.analytic import FMTrainerAnalytic
@@ -61,6 +62,7 @@ __all__ = [
     "REMTrainerAnalytic",
     "load_reweighted_rem_stacks",
     "MSETrainerAnalytic",
+    "load_reweighted_mse_stacks",
     "CDREMTrainerAnalytic",
     "MultiTrainerAnalytic",
     "FMTrainerAnalytic",

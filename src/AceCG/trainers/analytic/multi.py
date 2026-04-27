@@ -388,7 +388,6 @@ class MultiTrainerAnalytic(BaseTrainer):
         else:
             update = self.optimizer.step(g_total)
 
-        self.optimizer.L += update
         self.clamp_and_update()
 
         for tr in self.trainers:

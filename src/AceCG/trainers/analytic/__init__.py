@@ -3,7 +3,7 @@
 
 Re-exports all public trainers and TypedDicts from submodules:
   - rem.py    : EnsembleBatch, REMBatch, REMOut, REMTrainerAnalytic
-  - mse.py    : MSEBatch, MSEOut, MSETrainerAnalytic
+  - mse.py    : MSEBatch, MSEOut, MSETrainerAnalytic, load_reweighted_mse_stacks
   - cdrem.py  : CDREMBatch, CDREMOut, CDREMTrainerAnalytic
   - multi.py  : MultiOut, MultiTrainerAnalytic
 """
@@ -15,7 +15,7 @@ from .rem import (
     REMTrainerAnalytic,
     load_reweighted_rem_stacks,
 )
-from .mse import MSEBatch, MSEOut, MSETrainerAnalytic
+from .mse import MSEBatch, MSEOut, MSETrainerAnalytic, load_reweighted_mse_stacks
 from .cdrem import CDREMBatch, CDREMOut, CDREMTrainerAnalytic
 from .multi import MultiOut, MultiTrainerAnalytic
 from .fm import FMBatch, FMTrainerAnalytic
@@ -27,6 +27,7 @@ __all__ = [
     "REMOut",
     "REMTrainerAnalytic",
     "load_reweighted_rem_stacks",
+    "load_reweighted_mse_stacks",
     "MSEBatch",
     "MSEOut",
     "MSETrainerAnalytic",
